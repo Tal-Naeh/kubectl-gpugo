@@ -16,6 +16,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -40,6 +41,7 @@ type PodGPU struct {
 	Node        string
 	GPUIndex    string   // empty in pod-attributed mode
 	HintPods    []string // candidates in fallback mode (ns/pod)
+	GPUIndices  []string // sorted GPU indices used by this pod ("0","1","2" or "0,1")
 	GPUCount    int
 	GPUUtilPct  float64
 	VRAMUsedMiB float64
@@ -339,10 +341,11 @@ func aggregateByGPU(samples []sample) []PodGPU {
 		p, ok := agg[key]
 		if !ok {
 			p = &PodGPU{
-				Namespace: "-",
-				Pod:       fmt.Sprintf("(gpu %s)", gpu),
-				Node:      s.node,
-				GPUIndex:  gpu,
+				Namespace:  "-",
+				Pod:        fmt.Sprintf("(gpu %s)", gpu),
+				Node:       s.node,
+				GPUIndex:   gpu,
+				GPUIndices: []string{gpu},
 			}
 			agg[key] = p
 		}
@@ -361,6 +364,9 @@ func applySample(
 		if _, ok := seenGPU[k]; !ok {
 			seenGPU[k] = struct{}{}
 			p.GPUCount++
+			if gpu != "" {
+				p.GPUIndices = append(p.GPUIndices, gpu)
+			}
 		}
 		utilSum[key] += v
 	case "DCGM_FI_DEV_FB_USED":
@@ -377,6 +383,9 @@ func finalize(agg map[string]*PodGPU, utilSum map[string]float64) []PodGPU {
 	for k, p := range agg {
 		if p.GPUCount > 0 {
 			p.GPUUtilPct = utilSum[k] / float64(p.GPUCount)
+		}
+		if len(p.GPUIndices) > 1 {
+			sort.Strings(p.GPUIndices)
 		}
 		out = append(out, *p)
 	}

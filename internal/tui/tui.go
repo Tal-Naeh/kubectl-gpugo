@@ -124,9 +124,13 @@ func (m Model) View() string {
 	b.WriteString("\n\n")
 
 	pods := append([]scraper.PodGPU(nil), m.pods...)
+	// Group by the pod's first GPU index so the user can see at a glance
+	// which workloads are co-located on each card; within a GPU, sort by
+	// VRAM-used desc (biggest hog first).
 	sort.Slice(pods, func(i, j int) bool {
-		if pods[i].GPUUtilPct != pods[j].GPUUtilPct {
-			return pods[i].GPUUtilPct > pods[j].GPUUtilPct
+		gi, gj := gpuKey(pods[i]), gpuKey(pods[j])
+		if gi != gj {
+			return gi < gj
 		}
 		if pods[i].VRAMUsedMiB != pods[j].VRAMUsedMiB {
 			return pods[i].VRAMUsedMiB > pods[j].VRAMUsedMiB
@@ -138,7 +142,7 @@ func (m Model) View() string {
 	})
 
 	cols := []string{"NAMESPACE", "POD", "NODE", "GPU", "GPU%", "VRAM USED", "POWER"}
-	widths := []int{16, 48, 14, 4, 7, 22, 8}
+	widths := []int{16, 48, 14, 5, 7, 22, 8}
 
 	var hdr strings.Builder
 	for i, c := range cols {
@@ -148,6 +152,7 @@ func (m Model) View() string {
 	b.WriteString("\n")
 
 	fallback := false
+	prevGPU := ""
 	for _, p := range pods {
 		total := p.VRAMUsedMiB + p.VRAMFreeMiB
 		podCell := p.Pod
@@ -157,11 +162,23 @@ func (m Model) View() string {
 				podCell = podCell + " → " + strings.Join(p.HintPods, ",")
 			}
 		}
-		fmt.Fprintf(&b, "%-*s  %-*s  %-*s  %-*d  ",
+		gpuCell := strings.Join(p.GPUIndices, ",")
+		if gpuCell == "" {
+			gpuCell = fmt.Sprintf("(%d)", p.GPUCount) // shouldn't happen, defensive
+		}
+		// Blank line between groups of pods on different GPUs — makes
+		// pile-ups visually obvious.
+		curGPU := gpuKey(p)
+		if prevGPU != "" && prevGPU != curGPU {
+			b.WriteString("\n")
+		}
+		prevGPU = curGPU
+
+		fmt.Fprintf(&b, "%-*s  %-*s  %-*s  %-*s  ",
 			widths[0], truncate(p.Namespace, widths[0]),
 			widths[1], truncate(podCell, widths[1]),
 			widths[2], truncate(p.Node, widths[2]),
-			widths[3], p.GPUCount,
+			widths[3], gpuCell,
 		)
 		utilStr := fmt.Sprintf("%5.1f%%", p.GPUUtilPct)
 		b.WriteString(utilStyle(p.GPUUtilPct).Render(fmt.Sprintf("%-*s", widths[4], utilStr)))
@@ -187,6 +204,25 @@ func (m Model) View() string {
 		b.WriteString("\n")
 	}
 
+	return b.String()
+}
+
+// gpuKey returns a sortable key built from a pod's GPU indices so the table
+// groups rows by which card they're on. Padded to two digits so "0,1" sorts
+// before "10". An empty GPU set (shouldn't happen in pod-attributed mode)
+// pushes the row to the end via a high sentinel.
+func gpuKey(p scraper.PodGPU) string {
+	if len(p.GPUIndices) == 0 {
+		return "~"
+	}
+	var b strings.Builder
+	for _, g := range p.GPUIndices {
+		if len(g) < 2 {
+			b.WriteByte('0')
+		}
+		b.WriteString(g)
+		b.WriteByte(',')
+	}
 	return b.String()
 }
 

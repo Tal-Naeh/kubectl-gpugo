@@ -22,6 +22,7 @@ package scraper
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"sync"
 
@@ -68,6 +69,7 @@ func (s *Scraper) snapshotFromEnrichers(ctx context.Context, enrichers []k8s.Exp
 
 	type podGPUUse struct {
 		node      string
+		gpuIdx    string // "0", "1", "2" — captured from the `gpu` label so we can show it
 		vramBytes float64
 		utilPct   float64 // max across pids
 	}
@@ -80,6 +82,7 @@ func (s *Scraper) snapshotFromEnrichers(ctx context.Context, enrichers []k8s.Exp
 
 		for _, m := range r.fams["gpu_process_memory_bytes"].GetMetric() {
 			ns, podn, uuid := label(m, "namespace"), label(m, "pod"), label(m, "uuid")
+			gpuIdx := label(m, "gpu")
 			if ns == "" || podn == "" || uuid == "" {
 				continue
 			}
@@ -88,13 +91,16 @@ func (s *Scraper) snapshotFromEnrichers(ctx context.Context, enrichers []k8s.Exp
 				pods[key] = map[string]*podGPUUse{}
 			}
 			if pods[key][uuid] == nil {
-				pods[key][uuid] = &podGPUUse{node: r.node}
+				pods[key][uuid] = &podGPUUse{node: r.node, gpuIdx: gpuIdx}
+			} else if pods[key][uuid].gpuIdx == "" {
+				pods[key][uuid].gpuIdx = gpuIdx
 			}
 			pods[key][uuid].vramBytes += metricValue(m)
 		}
 
 		for _, m := range r.fams["gpu_process_utilization_percent"].GetMetric() {
 			ns, podn, uuid := label(m, "namespace"), label(m, "pod"), label(m, "uuid")
+			gpuIdx := label(m, "gpu")
 			if ns == "" || podn == "" || uuid == "" {
 				continue
 			}
@@ -103,7 +109,9 @@ func (s *Scraper) snapshotFromEnrichers(ctx context.Context, enrichers []k8s.Exp
 				pods[key] = map[string]*podGPUUse{}
 			}
 			if pods[key][uuid] == nil {
-				pods[key][uuid] = &podGPUUse{node: r.node}
+				pods[key][uuid] = &podGPUUse{node: r.node, gpuIdx: gpuIdx}
+			} else if pods[key][uuid].gpuIdx == "" {
+				pods[key][uuid].gpuIdx = gpuIdx
 			}
 			if v := metricValue(m); v > pods[key][uuid].utilPct {
 				pods[key][uuid].utilPct = v
@@ -151,6 +159,7 @@ func (s *Scraper) snapshotFromEnrichers(ctx context.Context, enrichers []k8s.Exp
 			powerShare float64
 			maxUtil    float64
 			node       string
+			gpuIdxs    []string
 		)
 		for uuid, use := range uses {
 			totalUsed += use.vramBytes
@@ -160,6 +169,9 @@ func (s *Scraper) snapshotFromEnrichers(ctx context.Context, enrichers []k8s.Exp
 			if node == "" {
 				node = use.node
 			}
+			if use.gpuIdx != "" {
+				gpuIdxs = append(gpuIdxs, use.gpuIdx)
+			}
 			if g, ok := gpus[uuid]; ok {
 				totalGPU += g.totalVRAM
 				if g.totalVRAM > 0 {
@@ -167,11 +179,13 @@ func (s *Scraper) snapshotFromEnrichers(ctx context.Context, enrichers []k8s.Exp
 				}
 			}
 		}
+		sort.Strings(gpuIdxs)
 		rows = append(rows, PodGPU{
 			Namespace:   ns,
 			Pod:         podn,
 			Node:        node,
 			GPUCount:    len(uses),
+			GPUIndices:  gpuIdxs,
 			GPUUtilPct:  maxUtil,
 			VRAMUsedMiB: totalUsed / mib,
 			VRAMFreeMiB: (totalGPU - totalUsed) / mib,
