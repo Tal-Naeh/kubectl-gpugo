@@ -26,6 +26,7 @@ func main() {
 	cfgFlags.AddFlags(pflag.CommandLine)
 
 	dump := pflag.Bool("dump", false, "print raw /metrics from each dcgm-exporter and exit (for label-convention debugging)")
+	dumpPod := pflag.String("dump-pod", "", "print raw /metrics from an explicit pod and exit; format: namespace/pod-name:port")
 	pflag.Parse()
 
 	client, restCfg, err := k8s.NewClient(cfgFlags)
@@ -41,6 +42,16 @@ func main() {
 		defer cancel()
 		if err := scr.Dump(ctx, os.Stdout); err != nil {
 			fmt.Fprintf(os.Stderr, "kubectl-gpugo: dump: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if *dumpPod != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := scr.DumpPod(ctx, *dumpPod, os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "kubectl-gpugo: dump-pod: %v\n", err)
 			os.Exit(1)
 		}
 		return

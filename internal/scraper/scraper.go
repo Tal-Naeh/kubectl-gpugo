@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/Tal-Naeh/kubectl-gpugo/internal/k8s"
@@ -101,6 +102,30 @@ func (s *Scraper) Snapshot(ctx context.Context) ([]PodGPU, error) {
 		}
 	}
 	return rows, nil
+}
+
+// DumpPod writes the raw /metrics body of an explicit pod to w. Format of
+// target: "namespace/pod-name:port" where port is numeric. Used by the
+// `--dump-pod` flag when investigating arbitrary exporters that the
+// auto-discovery wouldn't have found.
+func (s *Scraper) DumpPod(ctx context.Context, target string, w io.Writer) error {
+	nsRest := strings.SplitN(target, "/", 2)
+	if len(nsRest) != 2 {
+		return fmt.Errorf("bad target %q, want namespace/pod:port", target)
+	}
+	ns := nsRest[0]
+	nameRest := strings.SplitN(nsRest[1], ":", 2)
+	if len(nameRest) != 2 {
+		return fmt.Errorf("bad target %q, want namespace/pod:port", target)
+	}
+	name, port := nameRest[0], nameRest[1]
+	data, err := s.cs.CoreV1().Pods(ns).
+		ProxyGet("http", name, port, "metrics", nil).DoRaw(ctx)
+	if err != nil {
+		return fmt.Errorf("proxy GET %s/%s:%s: %w", ns, name, port, err)
+	}
+	_, err = w.Write(data)
+	return err
 }
 
 // Dump writes the raw /metrics body of every exporter to w. Used by the
