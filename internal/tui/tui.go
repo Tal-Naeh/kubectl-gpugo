@@ -138,7 +138,7 @@ func (m Model) View() string {
 	})
 
 	cols := []string{"NAMESPACE", "POD", "NODE", "GPU", "GPU%", "VRAM USED", "POWER"}
-	widths := []int{16, 36, 14, 4, 7, 22, 8}
+	widths := []int{16, 48, 14, 4, 7, 22, 8}
 
 	var hdr strings.Builder
 	for i, c := range cols {
@@ -147,11 +147,19 @@ func (m Model) View() string {
 	b.WriteString(styleColHdr.Render(hdr.String()))
 	b.WriteString("\n")
 
+	fallback := false
 	for _, p := range pods {
 		total := p.VRAMUsedMiB + p.VRAMFreeMiB
+		podCell := p.Pod
+		if p.GPUIndex != "" {
+			fallback = true
+			if len(p.HintPods) > 0 {
+				podCell = podCell + " → " + strings.Join(p.HintPods, ",")
+			}
+		}
 		fmt.Fprintf(&b, "%-*s  %-*s  %-*s  %-*d  ",
 			widths[0], truncate(p.Namespace, widths[0]),
-			widths[1], truncate(p.Pod, widths[1]),
+			widths[1], truncate(podCell, widths[1]),
 			widths[2], truncate(p.Node, widths[2]),
 			widths[3], p.GPUCount,
 		)
@@ -163,7 +171,14 @@ func (m Model) View() string {
 	}
 
 	if len(pods) == 0 && m.lastErr == nil && !m.lastScrape.IsZero() {
-		b.WriteString(styleDim.Render("  (no pods currently using GPUs)\n"))
+		b.WriteString(styleDim.Render("  (no GPU metrics returned by any dcgm-exporter)\n"))
+	}
+
+	if fallback {
+		b.WriteString("\n")
+		b.WriteString(styleDim.Render("dcgm-exporter is not emitting pod labels — rows are grouped per (node, GPU);\n"))
+		b.WriteString(styleDim.Render("→ lists pods on that node requesting nvidia.com/gpu. Enable --kubernetes\n"))
+		b.WriteString(styleDim.Render("on dcgm-exporter for per-pod attribution.\n"))
 	}
 
 	if m.lastErr != nil {
