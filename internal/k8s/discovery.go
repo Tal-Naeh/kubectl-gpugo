@@ -1,13 +1,41 @@
+// Package k8s discovers GPU-metrics-bearing pods in the cluster. It does so
+// without any hardcoded label selectors or fixed ports: it filters running
+// pods whose name/image/labels mention GPU-related keywords, picks a metrics
+// port from each candidate (annotation > named container port > first port),
+// probes /metrics, and classifies each by the metric family names it emits
+// (DCGM_FI_DEV_* → dcgm-exporter, gpu_process_memory_bytes → enricher).
 package k8s
 
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
+	"sync"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
+
+type ExporterKind int
+
+const (
+	KindUnknown ExporterKind = iota
+	KindDCGM
+	KindEnricher
+)
+
+func (k ExporterKind) String() string {
+	switch k {
+	case KindDCGM:
+		return "dcgm"
+	case KindEnricher:
+		return "enricher"
+	default:
+		return "unknown"
+	}
+}
 
 // ExporterPod is the subset of pod metadata the scraper actually needs.
 type ExporterPod struct {
@@ -15,58 +43,148 @@ type ExporterPod struct {
 	Name      string
 	Port      int32
 	NodeName  string
+	Kind      ExporterKind
 }
 
-// dcgm-exporter ships under a few different label conventions depending on
-// whether it was installed via the NVIDIA gpu-operator Helm chart, the
-// standalone dcgm-exporter chart, or a hand-rolled manifest. The GPU Operator
-// in particular renames everything `nvidia-dcgm-exporter`. Try each selector
-// in turn and stop at the first one that returns pods.
-var exporterSelectors = []string{
-	"app=nvidia-dcgm-exporter",
-	"app.kubernetes.io/name=nvidia-dcgm-exporter",
-	"app.kubernetes.io/component=nvidia-dcgm-exporter",
-	"app.kubernetes.io/name=dcgm-exporter",
-	"app=dcgm-exporter",
-	"app.kubernetes.io/component=dcgm-exporter",
+// keywords that mark a pod as a plausible GPU metrics source. Used as a
+// cheap filter before the expensive /metrics probe phase. Anything missing
+// from this list will be skipped, so it errs on the side of including
+// loosely-related pods (the probe will eliminate non-matches anyway).
+var gpuKeywords = []string{
+	"dcgm", "gpu", "nvidia", "cuda", "enricher", "cadvisor-gpu",
 }
 
-// FindExporters returns the running dcgm-exporter pods across all namespaces.
-// Pods that aren't Ready are filtered out — proxying to them just produces
-// connection-refused errors that pollute the TUI.
-func FindExporters(ctx context.Context, cs kubernetes.Interface) ([]ExporterPod, error) {
-	var found []corev1.Pod
-	for _, sel := range exporterSelectors {
-		list, err := cs.CoreV1().Pods("").List(ctx, metav1.ListOptions{LabelSelector: sel})
-		if err != nil {
-			return nil, fmt.Errorf("list pods (%s): %w", sel, err)
-		}
-		if len(list.Items) > 0 {
-			found = list.Items
-			break
-		}
-	}
-	if len(found) == 0 {
-		return nil, fmt.Errorf("no dcgm-exporter pods found (tried selectors: %v)", exporterSelectors)
+// DiscoverGPUExporters returns every running pod in the cluster that emits
+// recognisable GPU metric families. No label selectors are hardcoded: the
+// classifier reads /metrics and inspects the metric family names.
+//
+// Probes run in parallel; one slow pod can't block the others. A 3-second
+// per-probe context bounds worst case to that ceiling.
+func DiscoverGPUExporters(ctx context.Context, cs kubernetes.Interface) ([]ExporterPod, error) {
+	list, err := cs.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("list pods: %w", err)
 	}
 
-	out := make([]ExporterPod, 0, len(found))
-	for _, p := range found {
-		if p.Status.Phase != corev1.PodRunning || !podReady(p) {
-			continue
-		}
+	candidates := filterGPUCandidates(list.Items)
+
+	var (
+		out []ExporterPod
+		mu  sync.Mutex
+		wg  sync.WaitGroup
+	)
+	for _, p := range candidates {
 		port := metricsPort(p)
 		if port == 0 {
 			continue
 		}
-		out = append(out, ExporterPod{
-			Namespace: p.Namespace,
-			Name:      p.Name,
-			Port:      port,
-			NodeName:  p.Spec.NodeName,
-		})
+		wg.Add(1)
+		go func(p corev1.Pod, port int32) {
+			defer wg.Done()
+			kind, ok := classifyByProbe(ctx, cs, p, port)
+			if !ok {
+				return
+			}
+			mu.Lock()
+			out = append(out, ExporterPod{
+				Namespace: p.Namespace,
+				Name:      p.Name,
+				Port:      port,
+				NodeName:  p.Spec.NodeName,
+				Kind:      kind,
+			})
+			mu.Unlock()
+		}(p, port)
 	}
+	wg.Wait()
+
 	return out, nil
+}
+
+func filterGPUCandidates(pods []corev1.Pod) []corev1.Pod {
+	var out []corev1.Pod
+	for _, p := range pods {
+		if p.Status.Phase != corev1.PodRunning || !podReady(p) {
+			continue
+		}
+		if podMentionsGPU(p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func podMentionsGPU(p corev1.Pod) bool {
+	if matchesKW(p.Name) {
+		return true
+	}
+	for _, c := range p.Spec.Containers {
+		if matchesKW(c.Name) || matchesKW(c.Image) {
+			return true
+		}
+	}
+	for k, v := range p.Labels {
+		if matchesKW(k) || matchesKW(v) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesKW(s string) bool {
+	low := strings.ToLower(s)
+	for _, kw := range gpuKeywords {
+		if strings.Contains(low, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// classifyByProbe scrapes /metrics from the pod and returns its kind based
+// on the metric family names present. An empty or unreachable endpoint
+// returns (Unknown, false) and the pod is dropped from the result.
+func classifyByProbe(ctx context.Context, cs kubernetes.Interface, p corev1.Pod, port int32) (ExporterKind, bool) {
+	data, err := cs.CoreV1().Pods(p.Namespace).
+		ProxyGet("http", p.Name, strconv.Itoa(int(port)), "metrics", nil).
+		DoRaw(ctx)
+	if err != nil {
+		return KindUnknown, false
+	}
+	s := string(data)
+	if strings.Contains(s, "gpu_process_memory_bytes") {
+		return KindEnricher, true
+	}
+	if strings.Contains(s, "DCGM_FI_DEV_") {
+		return KindDCGM, true
+	}
+	return KindUnknown, false
+}
+
+// metricsPort picks the container port that exposes Prometheus metrics.
+// Resolution order: prometheus.io/port annotation → port named
+// metrics/http-metrics/prom/prometheus → first declared port. Returns 0 if
+// the pod declares no ports at all, in which case the caller skips it.
+func metricsPort(p corev1.Pod) int32 {
+	if v := p.Annotations["prometheus.io/port"]; v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return int32(n)
+		}
+	}
+	for _, c := range p.Spec.Containers {
+		for _, port := range c.Ports {
+			switch strings.ToLower(port.Name) {
+			case "metrics", "http-metrics", "prom", "prom-metrics", "prometheus":
+				return port.ContainerPort
+			}
+		}
+	}
+	for _, c := range p.Spec.Containers {
+		for _, port := range c.Ports {
+			return port.ContainerPort
+		}
+	}
+	return 0
 }
 
 func podReady(p corev1.Pod) bool {
@@ -76,26 +194,4 @@ func podReady(p corev1.Pod) bool {
 		}
 	}
 	return false
-}
-
-// metricsPort picks the container port that exposes Prometheus metrics. The
-// canonical dcgm-exporter port is 9400 (named "metrics"), but we fall back to
-// any HTTP-ish named port and finally to 9400 to handle minimal manifests
-// that don't name their ports.
-func metricsPort(p corev1.Pod) int32 {
-	for _, c := range p.Spec.Containers {
-		for _, port := range c.Ports {
-			if port.Name == "metrics" || port.Name == "http-metrics" {
-				return port.ContainerPort
-			}
-		}
-	}
-	for _, c := range p.Spec.Containers {
-		for _, port := range c.Ports {
-			if port.ContainerPort == 9400 {
-				return port.ContainerPort
-			}
-		}
-	}
-	return 9400
 }

@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Tal-Naeh/kubectl-gpugo/internal/k8s"
 	dto "github.com/prometheus/client_model/go"
@@ -49,7 +50,16 @@ type PodGPU struct {
 type Scraper struct {
 	cs      kubernetes.Interface
 	restCfg *rest.Config
+
+	// discovery cache. Auto-detection probes every candidate pod's /metrics
+	// to classify it; that's too expensive to do every 2s TUI tick, so we
+	// memoise the result for discoveryTTL.
+	discMu    sync.Mutex
+	discCache []k8s.ExporterPod
+	discTime  time.Time
 }
+
+const discoveryTTL = 30 * time.Second
 
 // prometheus/common v0.67+ exposes a package-global "name validation scheme"
 // (model.NameValidationScheme) that the expfmt TextParser consults; its zero
@@ -75,14 +85,46 @@ type sample struct {
 
 type gpuKey struct{ ns, pod, gpu string }
 
-// Snapshot scrapes all exporters once and returns either pod-attributed rows
-// or, when no metric carries pod labels, per-(node, GPU) fallback rows with
-// HintPods filled in from a cluster-wide pod scan.
+// Snapshot dispatches to the right backend based on what GPU exporters
+// auto-discovery found. Enricher (cadvisor-gpu-gpu-enricher and friends)
+// wins when available — its per-process labels give true pod attribution
+// even for workloads that bypass the NVIDIA device plugin. DCGM is the
+// fallback, with its own per-pod/per-GPU fallbacks layered inside.
 func (s *Scraper) Snapshot(ctx context.Context) ([]PodGPU, error) {
-	exporters, err := k8s.FindExporters(ctx, s.cs)
+	sources, err := s.discover(ctx, false)
 	if err != nil {
 		return nil, err
 	}
+	if len(sources) == 0 {
+		return nil, fmt.Errorf("no GPU metrics exporters discovered (no pod's /metrics emitted DCGM_FI_DEV_* or gpu_process_memory_bytes)")
+	}
+
+	var enrichers, dcgms []k8s.ExporterPod
+	for _, src := range sources {
+		switch src.Kind {
+		case k8s.KindEnricher:
+			enrichers = append(enrichers, src)
+		case k8s.KindDCGM:
+			dcgms = append(dcgms, src)
+		}
+	}
+
+	if len(enrichers) > 0 {
+		rows, err := s.snapshotFromEnrichers(ctx, enrichers)
+		if err == nil && len(rows) > 0 {
+			return rows, nil
+		}
+	}
+	if len(dcgms) > 0 {
+		return s.snapshotFromDCGM(ctx, dcgms)
+	}
+	return nil, nil
+}
+
+// snapshotFromDCGM implements the original DCGM-only path: per-pod
+// attribution when DCGM emits pod labels, per-(node, GPU) fallback when it
+// doesn't (with HintPods from a cluster-wide pod scan).
+func (s *Scraper) snapshotFromDCGM(ctx context.Context, exporters []k8s.ExporterPod) ([]PodGPU, error) {
 	samples, err := s.gather(ctx, exporters)
 	if err != nil {
 		return nil, err
@@ -102,6 +144,24 @@ func (s *Scraper) Snapshot(ctx context.Context) ([]PodGPU, error) {
 		}
 	}
 	return rows, nil
+}
+
+// discover returns the cached list of GPU exporters, refreshing when stale
+// (or when force=true). Probing every candidate pod's /metrics is too costly
+// to do every 2s; pods come and go on a much slower timescale.
+func (s *Scraper) discover(ctx context.Context, force bool) ([]k8s.ExporterPod, error) {
+	s.discMu.Lock()
+	defer s.discMu.Unlock()
+	if !force && time.Since(s.discTime) < discoveryTTL && len(s.discCache) > 0 {
+		return s.discCache, nil
+	}
+	sources, err := k8s.DiscoverGPUExporters(ctx, s.cs)
+	if err != nil {
+		return nil, err
+	}
+	s.discCache = sources
+	s.discTime = time.Now()
+	return sources, nil
 }
 
 // DumpPod writes the raw /metrics body of an explicit pod to w. Format of
@@ -128,15 +188,20 @@ func (s *Scraper) DumpPod(ctx context.Context, target string, w io.Writer) error
 	return err
 }
 
-// Dump writes the raw /metrics body of every exporter to w. Used by the
-// `--dump` flag to inspect what labels DCGM is actually emitting.
+// Dump writes the raw /metrics body of every auto-discovered GPU exporter
+// (dcgm, enricher, or anything else the classifier recognises) to w. Useful
+// for inspecting label conventions across exporters.
 func (s *Scraper) Dump(ctx context.Context, w io.Writer) error {
-	exporters, err := k8s.FindExporters(ctx, s.cs)
+	sources, err := s.discover(ctx, true) // force-refresh so --dump always reflects current state
 	if err != nil {
 		return err
 	}
-	for _, ex := range exporters {
-		fmt.Fprintf(w, "===== %s/%s on node %q :%d =====\n", ex.Namespace, ex.Name, ex.NodeName, ex.Port)
+	if len(sources) == 0 {
+		fmt.Fprintln(w, "no GPU exporters discovered")
+		return nil
+	}
+	for _, ex := range sources {
+		fmt.Fprintf(w, "===== [%s] %s/%s on node %q :%d =====\n", ex.Kind, ex.Namespace, ex.Name, ex.NodeName, ex.Port)
 		data, err := s.cs.CoreV1().Pods(ex.Namespace).
 			ProxyGet("http", ex.Name, strconv.Itoa(int(ex.Port)), "metrics", nil).DoRaw(ctx)
 		if err != nil {
