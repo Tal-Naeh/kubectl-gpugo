@@ -7,6 +7,7 @@
 package scraper
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strconv"
@@ -95,16 +96,39 @@ func (s *Scraper) Snapshot(ctx context.Context) ([]PodGPU, error) {
 	return out, nil
 }
 
-func (s *Scraper) scrapeOne(ctx context.Context, ex k8s.ExporterPod) (map[string]*dto.MetricFamily, error) {
+// scrapeOne reads the metrics body fully into memory before parsing so that
+// a) the parser sees a single deterministic byte slice, and b) we can include
+// a snippet of the raw response in any error message. The prometheus text
+// parser has been known to panic on certain malformed inputs; the named
+// return + defer-recover converts that into a normal error rather than
+// crashing the whole TUI.
+func (s *Scraper) scrapeOne(ctx context.Context, ex k8s.ExporterPod) (fams map[string]*dto.MetricFamily, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("parser panic on %s/%s: %v", ex.Namespace, ex.Name, r)
+			fams = nil
+		}
+	}()
+
 	req := s.cs.CoreV1().Pods(ex.Namespace).
 		ProxyGet("http", ex.Name, strconv.Itoa(int(ex.Port)), "metrics", nil)
-	rc, err := req.Stream(ctx)
+	data, err := req.DoRaw(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("proxy GET %s/%s: %w", ex.Namespace, ex.Name, err)
 	}
-	defer rc.Close()
 	var p expfmt.TextParser
-	return p.TextToMetricFamilies(rc)
+	fams, err = p.TextToMetricFamilies(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("parse %s/%s: %w (first 160B: %q)", ex.Namespace, ex.Name, err, snippet(data, 160))
+	}
+	return fams, nil
+}
+
+func snippet(b []byte, n int) string {
+	if len(b) > n {
+		b = b[:n]
+	}
+	return string(b)
 }
 
 func addSamples(
