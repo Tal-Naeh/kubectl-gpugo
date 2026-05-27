@@ -286,6 +286,11 @@ var wantedMetrics = []string{
 	"DCGM_FI_DEV_FB_USED",
 	"DCGM_FI_DEV_FB_FREE",
 	"DCGM_FI_DEV_POWER_USAGE",
+	// DCGM_FI_PROF_GR_ENGINE_ACTIVE is the per-MIG-slice graphics-engine
+	// activity ratio [0,1]; MIG-configured DCGM installs disable
+	// DCGM_FI_DEV_GPU_UTIL entirely (utilisation isn't meaningful per slice)
+	// so we treat PROF_GR_ENGINE_ACTIVE as the util replacement on MIG.
+	"DCGM_FI_PROF_GR_ENGINE_ACTIVE",
 }
 
 func extractSamples(fams map[string]*dto.MetricFamily, exporterNode string) []sample {
@@ -296,10 +301,18 @@ func extractSamples(fams map[string]*dto.MetricFamily, exporterNode string) []sa
 			continue
 		}
 		for _, m := range f.Metric {
-			ns, pod, gpu, host := readLabels(m.Label)
+			ns, pod, gpu, gpuI, host := readLabels(m.Label)
 			node := host
 			if node == "" {
 				node = exporterNode
+			}
+			// On MIG installs each metric line carries both `gpu` (the
+			// physical card) and `GPU_I_ID` (the MIG slice on that card).
+			// Multiple slices on the same card go to different pods, so we
+			// must key the "GPU" identity on both — otherwise four pods
+			// sharing physical GPU 0 collapse into a single row.
+			if gpuI != "" {
+				gpu = gpu + ":" + gpuI
 			}
 			out = append(out, sample{ns: ns, pod: pod, gpu: gpu, node: node, name: name, val: metricValue(m)})
 		}
@@ -358,17 +371,27 @@ func applySample(
 	p *PodGPU, key, metric, gpu string, v float64,
 	seenGPU map[gpuKey]struct{}, utilSum map[string]float64,
 ) {
+	// Register the (pod, gpu) pair regardless of which metric brought us
+	// here. MIG installs don't emit DCGM_FI_DEV_GPU_UTIL at all, so if we
+	// counted GPUs only from that metric, every pod's GPUCount would stay
+	// at 0 and the rows would never reach the TUI.
+	k := gpuKey{p.Namespace, p.Pod, gpu}
+	if _, ok := seenGPU[k]; !ok {
+		seenGPU[k] = struct{}{}
+		p.GPUCount++
+		if gpu != "" {
+			p.GPUIndices = append(p.GPUIndices, gpu)
+		}
+	}
+
 	switch metric {
 	case "DCGM_FI_DEV_GPU_UTIL":
-		k := gpuKey{p.Namespace, p.Pod, gpu}
-		if _, ok := seenGPU[k]; !ok {
-			seenGPU[k] = struct{}{}
-			p.GPUCount++
-			if gpu != "" {
-				p.GPUIndices = append(p.GPUIndices, gpu)
-			}
-		}
 		utilSum[key] += v
+	case "DCGM_FI_PROF_GR_ENGINE_ACTIVE":
+		// PROF metrics are reported as ratio [0,1]; scale to match the
+		// 0–100 semantics of DCGM_FI_DEV_GPU_UTIL so the TUI's % column
+		// is consistent regardless of which one the exporter emits.
+		utilSum[key] += v * 100
 	case "DCGM_FI_DEV_FB_USED":
 		p.VRAMUsedMiB += v
 	case "DCGM_FI_DEV_FB_FREE":
@@ -396,9 +419,9 @@ func finalize(agg map[string]*PodGPU, utilSum map[string]float64) []PodGPU {
 // The dcgm-exporter `--kubernetes` flag emits `namespace`, `pod`, `container`;
 // when re-scraped through Prometheus relabel rules the original labels can be
 // shifted to `exported_namespace`/`exported_pod`, so we accept both. The GPU
-// index is named `gpu` (modern releases) or `device`; the GPU UUID is
-// `UUID` (older releases) and is used as a fallback identifier.
-func readLabels(labels []*dto.LabelPair) (ns, pod, gpu, host string) {
+// index is named `gpu`; the MIG slice is `GPU_I_ID` (only present on
+// MIG-configured cards). `UUID` is a fallback when no `gpu` is present.
+func readLabels(labels []*dto.LabelPair) (ns, pod, gpu, gpuI, host string) {
 	var nsAlt, podAlt string
 	for _, l := range labels {
 		switch l.GetName() {
@@ -418,6 +441,8 @@ func readLabels(labels []*dto.LabelPair) (ns, pod, gpu, host string) {
 			if gpu == "" {
 				gpu = l.GetValue()
 			}
+		case "GPU_I_ID":
+			gpuI = l.GetValue()
 		case "Hostname":
 			host = l.GetValue()
 		}
