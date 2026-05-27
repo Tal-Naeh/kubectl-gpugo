@@ -264,13 +264,14 @@ func (s *Scraper) scrapeOne(ctx context.Context, ex k8s.ExporterPod) (fams map[s
 	if err != nil {
 		return nil, fmt.Errorf("proxy GET %s/%s: %w", ex.Namespace, ex.Name, err)
 	}
-	// Belt-and-suspenders: the package init() above sets this once, but some
-	// transitively-imported package has been observed resetting it back to
-	// UnsetValidation in this binary, which makes the parser panic with
-	// "Invalid name validation scheme requested: unset". Pin it again right
-	// before each parse — cheap and idempotent.
-	prommodel.NameValidationScheme = prommodel.LegacyValidation
-	var p expfmt.TextParser
+	// In prometheus/common v0.67, expfmt.TextParser carries its OWN scheme
+	// field (parser-local, NOT a reference to model.NameValidationScheme).
+	// The zero value is UnsetValidation, which makes the parser panic with
+	// "Invalid name validation scheme requested: unset" on the first label
+	// it tries to validate. NewTextParser constructs one with the scheme set
+	// explicitly. DCGM and the enricher both emit legacy-format identifiers,
+	// so LegacyValidation is correct.
+	p := expfmt.NewTextParser(prommodel.LegacyValidation)
 	fams, err = p.TextToMetricFamilies(bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("parse %s/%s: %w (first 160B: %q)", ex.Namespace, ex.Name, err, snippet(data, 160))
