@@ -1,0 +1,7 @@
+.DS_Store
+.claude/
+kubectl-gpugo
+/kubectl-gpugo
+/dist/
+*.test
+*.out
