@@ -264,6 +264,12 @@ func (s *Scraper) scrapeOne(ctx context.Context, ex k8s.ExporterPod) (fams map[s
 	if err != nil {
 		return nil, fmt.Errorf("proxy GET %s/%s: %w", ex.Namespace, ex.Name, err)
 	}
+	// Belt-and-suspenders: the package init() above sets this once, but some
+	// transitively-imported package has been observed resetting it back to
+	// UnsetValidation in this binary, which makes the parser panic with
+	// "Invalid name validation scheme requested: unset". Pin it again right
+	// before each parse — cheap and idempotent.
+	prommodel.NameValidationScheme = prommodel.LegacyValidation
 	var p expfmt.TextParser
 	fams, err = p.TextToMetricFamilies(bytes.NewReader(data))
 	if err != nil {
