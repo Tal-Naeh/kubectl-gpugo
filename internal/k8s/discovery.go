@@ -19,9 +19,13 @@ type ExporterPod struct {
 
 // dcgm-exporter ships under a few different label conventions depending on
 // whether it was installed via the NVIDIA gpu-operator Helm chart, the
-// standalone dcgm-exporter chart, or a hand-rolled manifest. Try them in turn
-// and stop at the first one that returns pods.
+// standalone dcgm-exporter chart, or a hand-rolled manifest. The GPU Operator
+// in particular renames everything `nvidia-dcgm-exporter`. Try each selector
+// in turn and stop at the first one that returns pods.
 var exporterSelectors = []string{
+	"app=nvidia-dcgm-exporter",
+	"app.kubernetes.io/name=nvidia-dcgm-exporter",
+	"app.kubernetes.io/component=nvidia-dcgm-exporter",
 	"app.kubernetes.io/name=dcgm-exporter",
 	"app=dcgm-exporter",
 	"app.kubernetes.io/component=dcgm-exporter",
