@@ -22,6 +22,7 @@ import (
 	"github.com/Tal-Naeh/kubectl-gpugo/internal/k8s"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/expfmt"
+	prommodel "github.com/prometheus/common/model"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -47,6 +48,16 @@ type PodGPU struct {
 type Scraper struct {
 	cs      kubernetes.Interface
 	restCfg *rest.Config
+}
+
+// prometheus/common v0.67+ exposes a package-global "name validation scheme"
+// (model.NameValidationScheme) that the expfmt TextParser consults; its zero
+// value is "unset" and the parser panics with "Invalid name validation
+// scheme requested: unset" if it hasn't been initialised. DCGM metric names
+// (`DCGM_FI_DEV_GPU_UTIL`, etc.) are all legacy-format identifiers, so we
+// pin the scheme to LegacyValidation here.
+func init() {
+	prommodel.NameValidationScheme = prommodel.LegacyValidation
 }
 
 func New(cs kubernetes.Interface, restCfg *rest.Config) *Scraper {
