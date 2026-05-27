@@ -78,6 +78,23 @@ func DiscoverGPUExporters(ctx context.Context, cs kubernetes.Interface) ([]Expor
 		if port == 0 {
 			continue
 		}
+		// Fast path: classify by container image name. Skips the apiserver
+		// /metrics round-trip for every well-known exporter image, which on
+		// slow proxies (e.g. RKE2 on a busy DGX) is the difference between
+		// "first scrape fits in 5s" and "context deadline exceeded".
+		if kind, ok := classifyByImage(p); ok {
+			out = append(out, ExporterPod{
+				Namespace: p.Namespace,
+				Name:      p.Name,
+				Port:      port,
+				NodeName:  p.Spec.NodeName,
+				Kind:      kind,
+			})
+			continue
+		}
+		// Slow path: actually probe the pod's /metrics endpoint and look at
+		// the metric family names. Only used for exporters with unfamiliar
+		// image names.
 		wg.Add(1)
 		go func(p corev1.Pod, port int32) {
 			defer wg.Done()
@@ -99,6 +116,24 @@ func DiscoverGPUExporters(ctx context.Context, cs kubernetes.Interface) ([]Expor
 	wg.Wait()
 
 	return out, nil
+}
+
+// classifyByImage looks at the container image references to decide what
+// kind of exporter a pod is. Avoids the network round-trip of classifyByProbe
+// for the canonical NVIDIA / cadvisor-gpu images. Returns (Unknown, false)
+// when the image doesn't match a known pattern, so the caller falls back to
+// the probe.
+func classifyByImage(p corev1.Pod) (ExporterKind, bool) {
+	for _, c := range p.Spec.Containers {
+		img := strings.ToLower(c.Image)
+		switch {
+		case strings.Contains(img, "dcgm-exporter"):
+			return KindDCGM, true
+		case strings.Contains(img, "cadvisor-gpu"), strings.Contains(img, "gpu-enricher"):
+			return KindEnricher, true
+		}
+	}
+	return KindUnknown, false
 }
 
 func filterGPUCandidates(pods []corev1.Pod) []corev1.Pod {

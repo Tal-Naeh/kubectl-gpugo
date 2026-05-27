@@ -19,7 +19,7 @@ import (
 
 const (
 	tickInterval  = 2 * time.Second
-	scrapeTimeout = 5 * time.Second
+	scrapeTimeout = 10 * time.Second
 )
 
 type tickMsg time.Time
