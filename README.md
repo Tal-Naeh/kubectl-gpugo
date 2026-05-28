@@ -56,21 +56,67 @@ The `list pods` on all namespaces is for auto-discovery. The `pods/proxy` is wha
 - **Lens / freelens kubeconfigs** — their local proxy doesn't pass pod-proxy subresource requests through. Use a direct kubeconfig.
 - **Restricted RBAC tokens** that can't `get pods/proxy`. There's no way around this: the entire scrape path goes through that subresource.
 
-## Install as a kubectl plugin
+## Install
+
+### Recommended: via Krew (the kubectl plugin manager)
+
+If you already have [krew](https://krew.sigs.k8s.io/) installed, this is a one-liner:
+
+```sh
+kubectl krew install gpugo
+kubectl gpugo
+```
+
+That's it. Krew downloads the right binary for your OS/arch, sha256-verifies it, drops it on `$PATH`, and `kubectl krew upgrade` keeps it current along with every other plugin.
+
+#### Don't have krew yet?
+
+**macOS (Homebrew):**
+
+```sh
+brew install krew
+echo 'export PATH="${KREW_ROOT:-$HOME/.krew}/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+**macOS / Linux (no Homebrew):**
+
+```sh
+(
+  set -x; cd "$(mktemp -d)" &&
+  OS="$(uname | tr '[:upper:]' '[:lower:]')" &&
+  ARCH="$(uname -m | sed -e 's/x86_64/amd64/' -e 's/\(arm\)\(64\)\?.*/\1\2/' -e 's/aarch64$/arm64/')" &&
+  KREW="krew-${OS}_${ARCH}" &&
+  curl -fsSLO "https://github.com/kubernetes-sigs/krew/releases/latest/download/${KREW}.tar.gz" &&
+  tar zxvf "${KREW}.tar.gz" &&
+  ./"${KREW}" install krew
+)
+echo 'export PATH="${KREW_ROOT:-$HOME/.krew}/bin:$PATH"' >> ~/.zshrc   # or ~/.bashrc
+source ~/.zshrc
+```
+
+**Windows** has a [separate installer](https://krew.sigs.k8s.io/docs/user-guide/setup/install/).
+
+Then run `kubectl krew install gpugo` from the recommended section above.
+
+### Alternative: from source
 
 ```sh
 go install github.com/Tal-Naeh/kubectl-gpugo@latest
 # put the resulting binary on your PATH, renamed to `kubectl-gpugo`
 mv "$(go env GOPATH)/bin/kubectl-gpugo" /usr/local/bin/kubectl-gpugo
-```
-
-Then run:
-
-```sh
 kubectl gpugo
 ```
 
-`kubectl` finds the plugin by the `kubectl-` prefix on PATH. Standard kubectl flags work (`--context`, `--kubeconfig`, `-n`, etc.) — they're routed via `genericclioptions`.
+Useful if you want to track `main` instead of tagged releases, or your environment can't reach github.com/kubernetes-sigs/krew.
+
+### Alternative: pre-built archive
+
+Download the archive matching your OS/arch from the [releases page](https://github.com/Tal-Naeh/kubectl-gpugo/releases), extract `kubectl-gpugo`, and drop it anywhere on `$PATH`.
+
+### How `kubectl` finds the plugin
+
+`kubectl` discovers plugins by looking for any binary named `kubectl-<something>` on `$PATH`. The standard kubectl flags (`--context`, `--kubeconfig`, `-n`, etc.) are routed automatically via `genericclioptions` — they behave exactly like in vanilla `kubectl`.
 
 ## Flags
 
