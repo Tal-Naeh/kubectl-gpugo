@@ -34,3 +34,9 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Auto-PR to krew-index with the new sha256s + URIs. Triggers off the
+      # GitHub Release that GoReleaser just produced. Krew's tide bot auto-
+      # approves these update PRs. Recommended by ahmetb on the v0.1.1 PR.
+      - name: Update plugin manifest on krew-index
+        uses: rajatjindal/krew-release-bot@v0.0.46
