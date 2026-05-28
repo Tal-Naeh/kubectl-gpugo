@@ -35,6 +35,7 @@ type Model struct {
 	pods       []scraper.PodGPU
 	lastErr    error
 	lastScrape time.Time
+	scraping   bool // true while a scrape is in flight; prevents pile-up
 	width      int
 	height     int
 }
@@ -44,6 +45,9 @@ func NewModel(s *scraper.Scraper) Model {
 }
 
 func (m Model) Init() tea.Cmd {
+	// Init fires the first scrape and starts the tick loop. scraping=true so
+	// the next tick won't queue a second scrape on top of the first.
+	m.scraping = true
 	return tea.Batch(scrapeCmd(m.scr), tickCmd())
 }
 
@@ -70,14 +74,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c", "esc":
 			return m, tea.Quit
 		case "r":
+			// Manual refresh — only kicks a scrape if one isn't already running.
+			if m.scraping {
+				return m, nil
+			}
+			m.scraping = true
 			return m, scrapeCmd(m.scr)
 		}
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 	case tickMsg:
-		return m, tea.Batch(scrapeCmd(m.scr), tickCmd())
+		// Skip the scrape if the previous one is still in flight. Slow proxies
+		// (RKE2 on busy DGX, freelens) can take longer than tickInterval and
+		// piling new scrapes on top of unfinished ones is what wedges them.
+		cmds := []tea.Cmd{tickCmd()}
+		if !m.scraping {
+			m.scraping = true
+			cmds = append(cmds, scrapeCmd(m.scr))
+		}
+		return m, tea.Batch(cmds...)
 	case scrapeMsg:
+		m.scraping = false
 		m.lastErr = msg.err
 		m.lastScrape = msg.at
 		if msg.err == nil {
@@ -120,7 +138,11 @@ func (m Model) View() string {
 	}
 	b.WriteString(styleTitle.Render("kubectl-gpugo"))
 	b.WriteString("  ")
-	b.WriteString(styleHint.Render(fmt.Sprintf("last scrape %s · %d pods on GPUs · [q]uit  [r]efresh", ts, len(m.pods))))
+	status := fmt.Sprintf("last scrape %s · %d pods on GPUs · [q]uit  [r]efresh", ts, len(m.pods))
+	if m.scraping {
+		status += " · scraping…"
+	}
+	b.WriteString(styleHint.Render(status))
 	b.WriteString("\n\n")
 
 	pods := append([]scraper.PodGPU(nil), m.pods...)
