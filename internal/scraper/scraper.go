@@ -59,6 +59,11 @@ type Scraper struct {
 	discMu    sync.Mutex
 	discCache []k8s.ExporterPod
 	discTime  time.Time
+
+	// explicit, when non-empty, replaces auto-discovery entirely. Set via
+	// the `--exporter` CLI flag for clusters where keyword filtering misses
+	// the user's exporter or where listing pods cluster-wide is denied.
+	explicit []k8s.ExporterPod
 }
 
 const discoveryTTL = 30 * time.Second
@@ -75,6 +80,15 @@ func init() {
 
 func New(cs kubernetes.Interface, restCfg *rest.Config) *Scraper {
 	return &Scraper{cs: cs, restCfg: restCfg}
+}
+
+// SetExplicit pins the scraper to a hand-picked list of exporter pods,
+// bypassing auto-discovery. Useful when keyword-based filtering misses
+// a non-standard exporter, when listing pods cluster-wide is denied by
+// RBAC, or when you just want to focus the TUI on one specific pod.
+// Kind is filled in by the first call to discover() (via /metrics probe).
+func (s *Scraper) SetExplicit(eps []k8s.ExporterPod) {
+	s.explicit = eps
 }
 
 // sample is the flattened form of a single DCGM metric reading. Everything
@@ -151,19 +165,59 @@ func (s *Scraper) snapshotFromDCGM(ctx context.Context, exporters []k8s.Exporter
 // discover returns the cached list of GPU exporters, refreshing when stale
 // (or when force=true). Probing every candidate pod's /metrics is too costly
 // to do every 2s; pods come and go on a much slower timescale.
+//
+// When --exporter is set (s.explicit non-empty), auto-discovery is skipped
+// entirely — we probe just the user-supplied targets and classify them by
+// metric content, same way DiscoverGPUExporters does for auto-discovery.
 func (s *Scraper) discover(ctx context.Context, force bool) ([]k8s.ExporterPod, error) {
 	s.discMu.Lock()
 	defer s.discMu.Unlock()
 	if !force && time.Since(s.discTime) < discoveryTTL && len(s.discCache) > 0 {
 		return s.discCache, nil
 	}
-	sources, err := k8s.DiscoverGPUExporters(ctx, s.cs)
-	if err != nil {
-		return nil, err
+
+	var sources []k8s.ExporterPod
+	if len(s.explicit) > 0 {
+		sources = s.classifyExplicit(ctx)
+	} else {
+		var err error
+		sources, err = k8s.DiscoverGPUExporters(ctx, s.cs)
+		if err != nil {
+			return nil, err
+		}
 	}
 	s.discCache = sources
 	s.discTime = time.Now()
 	return sources, nil
+}
+
+// classifyExplicit probes each user-supplied exporter target and decides
+// its Kind from the metric family names it emits. Unreachable or
+// unrecognised pods are silently dropped (with their slot left out of the
+// returned slice) — same policy as auto-discovery.
+func (s *Scraper) classifyExplicit(ctx context.Context) []k8s.ExporterPod {
+	out := make([]k8s.ExporterPod, 0, len(s.explicit))
+	for _, ex := range s.explicit {
+		data, err := s.cs.CoreV1().Pods(ex.Namespace).
+			ProxyGet("http", ex.Name, strconv.Itoa(int(ex.Port)), "metrics", nil).
+			DoRaw(ctx)
+		if err != nil {
+			continue
+		}
+		str := string(data)
+		ex.Kind = k8s.KindUnknown
+		switch {
+		case strings.Contains(str, "gpu_process_memory_bytes"):
+			ex.Kind = k8s.KindEnricher
+		case strings.Contains(str, "DCGM_FI_DEV_"):
+			ex.Kind = k8s.KindDCGM
+		}
+		if ex.Kind == k8s.KindUnknown {
+			continue
+		}
+		out = append(out, ex)
+	}
+	return out
 }
 
 // DumpPod writes the raw /metrics body of an explicit pod to w. Format of

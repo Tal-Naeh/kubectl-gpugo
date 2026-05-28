@@ -8,6 +8,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Tal-Naeh/kubectl-gpugo/internal/k8s"
@@ -27,6 +29,7 @@ func main() {
 
 	dump := pflag.Bool("dump", false, "print raw /metrics from each dcgm-exporter and exit (for label-convention debugging)")
 	dumpPod := pflag.String("dump-pod", "", "print raw /metrics from an explicit pod and exit; format: namespace/pod-name:port")
+	exporters := pflag.StringSlice("exporter", nil, "explicit exporter target(s) to scrape; bypasses auto-discovery. Format: namespace/pod-name:port. Comma-separated or repeat the flag.")
 	pflag.Parse()
 
 	client, restCfg, err := k8s.NewClient(cfgFlags)
@@ -36,6 +39,15 @@ func main() {
 	}
 
 	scr := scraper.New(client, restCfg)
+
+	if len(*exporters) > 0 {
+		parsed, err := parseExporterSpecs(*exporters)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "kubectl-gpugo: %v\n", err)
+			os.Exit(1)
+		}
+		scr.SetExplicit(parsed)
+	}
 
 	if *dump {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -62,4 +74,32 @@ func main() {
 		fmt.Fprintf(os.Stderr, "kubectl-gpugo: tui: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// parseExporterSpecs turns "namespace/pod:port" strings (one per --exporter
+// flag occurrence, or comma-separated within one) into ExporterPod stubs.
+// The Kind field is left unset; the scraper probes /metrics at first
+// discovery to classify them as DCGM, enricher, or skip.
+func parseExporterSpecs(specs []string) ([]k8s.ExporterPod, error) {
+	out := make([]k8s.ExporterPod, 0, len(specs))
+	for _, spec := range specs {
+		parts := strings.SplitN(spec, "/", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("bad --exporter %q: expected namespace/pod:port", spec)
+		}
+		np := strings.SplitN(parts[1], ":", 2)
+		if len(np) != 2 {
+			return nil, fmt.Errorf("bad --exporter %q: expected namespace/pod:port", spec)
+		}
+		port, err := strconv.Atoi(np[1])
+		if err != nil || port <= 0 {
+			return nil, fmt.Errorf("bad --exporter %q: invalid port", spec)
+		}
+		out = append(out, k8s.ExporterPod{
+			Namespace: parts[0],
+			Name:      np[0],
+			Port:      int32(port),
+		})
+	}
+	return out, nil
 }
