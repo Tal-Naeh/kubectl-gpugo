@@ -34,7 +34,9 @@ archives:
   - id: default
     ids:
       - kubectl-gpugo
-    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    # Use `.Tag` (includes the leading "v") instead of `.Version` so the
+    # filename matches the URL pattern the krew-release-bot template uses.
+    name_template: "{{ .ProjectName }}_{{ .Tag }}_{{ .Os }}_{{ .Arch }}"
     formats:
       - tar.gz
     format_overrides:
