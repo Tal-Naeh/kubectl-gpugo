@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	tickInterval  = 2 * time.Second
+	tickInterval  = 20 * time.Second
 	scrapeTimeout = 10 * time.Second
 
 	// reservedRows is what the View() chrome occupies outside the scrollable
