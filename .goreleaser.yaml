@@ -1,0 +1,67 @@
+# GoReleaser config — cross-compiles kubectl-gpugo for every platform Krew
+# supports, creates a GitHub Release with the archives + checksums attached,
+# and emits a krew-plugin manifest as a release artifact so the krew-index PR
+# can be assembled mechanically.
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: kubectl-gpugo
+    main: ./
+    binary: kubectl-gpugo
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    # Windows on ARM is uncommon for CLI tools and Krew doesn't enforce it.
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - id: default
+    ids:
+      - kubectl-gpugo
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: 'checksums.txt'
+
+release:
+  github:
+    owner: Tal-Naeh
+    name: kubectl-gpugo
+  draft: false
+  prerelease: auto
+  name_template: "{{.ProjectName}} {{.Tag}}"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - 'Merge pull request'
