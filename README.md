@@ -2,7 +2,11 @@
 
 A `top`-like TUI for per-pod GPU usage on Kubernetes — zero cluster footprint.
 
-`kubectl-gpugo` auto-discovers `dcgm-exporter` (and optionally `cadvisor-gpu-gpu-enricher`) pods you already have running and scrapes them through the kube-apiserver pod-proxy subresource. **No DaemonSets installed, no port-forwards on your machine, no firewall changes.** Works with MIG.
+`kubectl-gpugo` auto-discovers any GPU metrics exporter you already have running and scrapes it through the kube-apiserver pod-proxy subresource. **No DaemonSets installed, no port-forwards on your machine, no firewall changes.** Works with MIG.
+
+Out of the box it understands two kinds of exporters:
+- **`dcgm-exporter`** — NVIDIA's standard GPU metrics exporter (from the GPU Operator or the standalone chart).
+- **Per-process GPU exporters** — anything that emits `gpu_process_memory_bytes` with `pod`/`namespace`/`container` labels. Used when workloads bypass the device plugin via `NVIDIA_VISIBLE_DEVICES=all` and dcgm-exporter can't attribute by itself.
 
 ## What it shows
 
@@ -25,12 +29,12 @@ Rows are sorted by physical GPU, then by MIG slice ID. A blank line separates ea
 
 ### On the cluster
 
-- An NVIDIA-flavoured GPU exporter that auto-discovery recognises. Out of the box:
-  - **`dcgm-exporter`** — image name contains `dcgm-exporter` (from the NVIDIA GPU Operator or the standalone chart)
-  - **`cadvisor-gpu-gpu-enricher`** — image name contains `cadvisor-gpu` or `gpu-enricher` (Kaleidoo's per-process attribution sidecar)
-  - Anything else that exposes `DCGM_FI_DEV_*` or `gpu_process_memory_bytes` family names on its `/metrics` (auto-classified by content probe).
+- An NVIDIA GPU exporter the tool recognises:
+  - **`dcgm-exporter`** — image name contains `dcgm-exporter`, or its `/metrics` emits `DCGM_FI_DEV_*` family names.
+  - **A per-process GPU exporter** — anything whose `/metrics` emits `gpu_process_memory_bytes` with `pod`/`namespace`/`container` labels. Tools that produce this format work without code changes.
+  - Use `--exporter` to point at any pod by `namespace/name:port` if image-name and metric-content auto-detection don't catch your setup.
 - For **per-pod attribution** from dcgm-exporter alone: dcgm-exporter must run with `--kubernetes` enabled, so metrics carry `namespace`/`pod` labels. The NVIDIA GPU Operator does this by default. Without it, you fall back to per-(node, GPU) rows.
-- For workloads using `NVIDIA_VISIBLE_DEVICES=all` to bypass the device plugin, dcgm-exporter can't attribute (kubelet's pod-resources API knows nothing). For that case you need an enricher like `cadvisor-gpu-gpu-enricher` deployed alongside.
+- For workloads using `NVIDIA_VISIBLE_DEVICES=all` to bypass the device plugin, dcgm-exporter can't attribute (kubelet's pod-resources API knows nothing). For that case you need a per-process exporter deployed alongside.
 - **MIG**: dcgm-exporter on MIG-configured cards emits `DCGM_FI_PROF_GR_ENGINE_ACTIVE` per slice instead of `DCGM_FI_DEV_GPU_UTIL`. We handle both.
 
 ### Your kubeconfig user / service account needs

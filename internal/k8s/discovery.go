@@ -51,7 +51,7 @@ type ExporterPod struct {
 // from this list will be skipped, so it errs on the side of including
 // loosely-related pods (the probe will eliminate non-matches anyway).
 var gpuKeywords = []string{
-	"dcgm", "gpu", "nvidia", "cuda", "enricher", "cadvisor-gpu",
+	"dcgm", "gpu", "nvidia", "cuda",
 }
 
 // DiscoverGPUExporters returns every running pod in the cluster that emits
@@ -120,17 +120,15 @@ func DiscoverGPUExporters(ctx context.Context, cs kubernetes.Interface) ([]Expor
 
 // classifyByImage looks at the container image references to decide what
 // kind of exporter a pod is. Avoids the network round-trip of classifyByProbe
-// for the canonical NVIDIA / cadvisor-gpu images. Returns (Unknown, false)
+// for the canonical NVIDIA dcgm-exporter image. Returns (Unknown, false)
 // when the image doesn't match a known pattern, so the caller falls back to
-// the probe.
+// the metric-content probe. Per-process exporters always go through the
+// probe — there's no widely-deployed image name to fast-path on.
 func classifyByImage(p corev1.Pod) (ExporterKind, bool) {
 	for _, c := range p.Spec.Containers {
 		img := strings.ToLower(c.Image)
-		switch {
-		case strings.Contains(img, "dcgm-exporter"):
+		if strings.Contains(img, "dcgm-exporter") {
 			return KindDCGM, true
-		case strings.Contains(img, "cadvisor-gpu"), strings.Contains(img, "gpu-enricher"):
-			return KindEnricher, true
 		}
 	}
 	return KindUnknown, false

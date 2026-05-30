@@ -102,10 +102,10 @@ type sample struct {
 type gpuKey struct{ ns, pod, gpu string }
 
 // Snapshot dispatches to the right backend based on what GPU exporters
-// auto-discovery found. Enricher (cadvisor-gpu-gpu-enricher and friends)
-// wins when available — its per-process labels give true pod attribution
-// even for workloads that bypass the NVIDIA device plugin. DCGM is the
-// fallback, with its own per-pod/per-GPU fallbacks layered inside.
+// auto-discovery found. A per-process exporter wins when available — its
+// per-pod labels give true attribution even for workloads that bypass the
+// NVIDIA device plugin. DCGM is the fallback, with its own per-pod and
+// per-(node, GPU) fallbacks layered inside.
 func (s *Scraper) Snapshot(ctx context.Context) ([]PodGPU, error) {
 	sources, err := s.discover(ctx, false)
 	if err != nil {

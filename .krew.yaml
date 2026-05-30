@@ -1,11 +1,6 @@
 # krew-release-bot template. Rendered on every tag push, the result is
 # what gets PR'd to krew-index. The bot resolves `addURIAndSha` by
 # fetching each release archive and computing its sha256.
-#
-# Keep this in sync with the (one-off, manually-submitted) v0.1.1 manifest
-# living in krew-index at plugins/gpugo.yaml — schema fields, description,
-# caveats. The static reference at /Users/taln/kubectl-gpugo/krew/gpugo.yaml
-# was deleted; this file is the source of truth.
 apiVersion: krew.googlecontainertools.github.com/v1alpha2
 kind: Plugin
 metadata:
@@ -16,10 +11,11 @@ spec:
   shortDescription: Top-like TUI for per-pod GPU usage on Kubernetes
   description: |
     A zero-cluster-footprint, top-like TUI for per-pod GPU usage on
-    Kubernetes. Auto-discovers existing dcgm-exporter (and optionally
-    cadvisor-gpu-gpu-enricher) pods and scrapes them through the
-    kube-apiserver pod-proxy subresource — no DaemonSet to install,
-    no port-forwards on your machine, no firewall changes.
+    Kubernetes. Auto-discovers any GPU metrics exporter you already
+    have running (dcgm-exporter, or any per-process exporter emitting
+    gpu_process_memory_bytes) and scrapes it through the kube-apiserver
+    pod-proxy subresource — no DaemonSet to install, no port-forwards
+    on your machine, no firewall changes.
 
     Handles MIG: per-slice rows are grouped by physical GPU and labeled
     with the slice ID (e.g. "0:8" = GPU 0, MIG slice 8). When workloads
@@ -30,14 +26,14 @@ spec:
     20 seconds.
   caveats: |
     Requires:
-      - dcgm-exporter (or another exporter emitting DCGM_FI_DEV_* /
+      - A GPU exporter (dcgm-exporter, or one emitting
         gpu_process_memory_bytes) running in the target cluster.
       - The user's RBAC must allow "list pods" cluster-wide and
         "get pods/proxy" in the exporter's namespace.
 
-    Will not work with Lens / freelens local-proxy kubeconfigs — their
-    proxy does not pass pod-proxy subresource requests through. Use a
-    direct kubeconfig.
+    Will not work with Lens local-proxy kubeconfigs — their proxy does
+    not pass pod-proxy subresource requests through. Use a direct
+    kubeconfig.
   platforms:
   - selector:
       matchLabels:

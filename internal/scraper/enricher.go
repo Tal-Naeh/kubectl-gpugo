@@ -1,11 +1,12 @@
-// Per-pod GPU attribution via cadvisor-gpu-gpu-enricher.
+// Per-pod GPU attribution via a per-process GPU exporter.
 //
-// The enricher solves the exact problem DCGM can't: when workloads grab GPUs
-// via NVIDIA_VISIBLE_DEVICES=all (bypassing the device plugin), kubelet's
+// Solves the exact problem DCGM can't: when workloads grab GPUs via
+// NVIDIA_VISIBLE_DEVICES=all (bypassing the device plugin), kubelet's
 // pod-resources API has no allocation to report and DCGM falls back to
-// unattributed per-GPU rows. The enricher reads /proc on the host (it's
-// hostPID:true) and correlates each GPU process's PID back to its
-// container/pod via cgroup paths, then exposes:
+// unattributed per-GPU rows. A per-process exporter (one that reads /proc
+// on the host with hostPID and correlates each GPU process's PID back to
+// its container/pod via cgroup paths) sidesteps this by exposing the
+// pod/container directly in metric labels:
 //
 //   gpu_process_memory_bytes{namespace,pod,container,pid,gpu,uuid,...}
 //   gpu_process_utilization_percent{...same labels...}
