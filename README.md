@@ -20,8 +20,7 @@ Out of the box it understands two kinds of exporters:
 | VRAM USED  | Used / Total framebuffer, summed across the pod's GPUs / slices             |
 | POWER      | Power draw in Watts (proportional share when GPUs are shared across pods)   |
 
-<img width="1064" height="698" alt="image" src="https://github.com/user-attachments/assets/8244c764-1d00-4f2b-bb28-d5b02c4b0950" />
-
+<img width="1024" height="671" alt="image" src="https://github.com/user-attachments/assets/2c30b19d-5af7-48da-b7e3-512291f58cf5" />
 
 Rows are sorted by physical GPU, then by MIG slice ID. A blank line separates each physical card so pile-ups are obvious at a glance.
 
