@@ -201,7 +201,7 @@ plugins:
 
 ## Prefer a GUI? Freelens extension
 
-The same discovery, scraping and attribution logic ships as a Freelens extension: [`freelens-gpu-extension`](https://github.com/Tal-Naeh/freelens-gpu-extension). It adds a **GPU** page to the cluster sidebar and GPU sections to the Pod and Node detail drawers, and it works through Freelens' own cluster connection (so the Lens-proxy caveat above does not apply there). Install from *File → Extensions* with the name `freelens-gpu-extension`.
+The same discovery, scraping and attribution logic ships as a Freelens extension: [`freelens-gpu-extension`](https://github.com/Tal-Naeh/freelens-gpu-extension). It adds a **GPU** page to the cluster sidebar and GPU sections to the Pod and Node detail drawers, and it works through Freelens' own cluster connection (so the Lens-proxy caveat above does not apply there). Install from *File → Extensions* with the npm name `@tal-naeh/freelens-gpu-extension`.
 
 ## Local dev
 
