@@ -1,0 +1,24 @@
+# HELP DCGM_FI_DEV_GPU_UTIL GPU utilization (in %).
+# TYPE DCGM_FI_DEV_GPU_UTIL gauge
+DCGM_FI_DEV_GPU_UTIL{gpu="0",UUID="GPU-aaaa",device="nvidia0",modelName="NVIDIA A100-SXM4-80GB",Hostname="node-a",container="vllm",namespace="ml",pod="vllm-0"} 87
+DCGM_FI_DEV_GPU_UTIL{gpu="1",UUID="GPU-bbbb",device="nvidia1",modelName="NVIDIA A100-SXM4-80GB",Hostname="node-a",container="vllm",namespace="ml",pod="vllm-0"} 43
+DCGM_FI_DEV_GPU_UTIL{gpu="2",UUID="GPU-cccc",device="nvidia2",modelName="NVIDIA A100-SXM4-80GB",Hostname="node-a",container="tei",namespace="embeddings",pod="tei-7d9f-x1"} 12
+DCGM_FI_DEV_GPU_UTIL{gpu="3",UUID="GPU-dddd",device="nvidia3",modelName="NVIDIA A100-SXM4-80GB",Hostname="node-a",container="",namespace="",pod=""} 0
+# HELP DCGM_FI_DEV_FB_USED Framebuffer memory used (in MiB).
+# TYPE DCGM_FI_DEV_FB_USED gauge
+DCGM_FI_DEV_FB_USED{gpu="0",UUID="GPU-aaaa",device="nvidia0",Hostname="node-a",container="vllm",namespace="ml",pod="vllm-0"} 70000
+DCGM_FI_DEV_FB_USED{gpu="1",UUID="GPU-bbbb",device="nvidia1",Hostname="node-a",container="vllm",namespace="ml",pod="vllm-0"} 65000
+DCGM_FI_DEV_FB_USED{gpu="2",UUID="GPU-cccc",device="nvidia2",Hostname="node-a",container="tei",namespace="embeddings",pod="tei-7d9f-x1"} 4096
+DCGM_FI_DEV_FB_USED{gpu="3",UUID="GPU-dddd",device="nvidia3",Hostname="node-a",container="",namespace="",pod=""} 0
+# HELP DCGM_FI_DEV_FB_FREE Framebuffer memory free (in MiB).
+# TYPE DCGM_FI_DEV_FB_FREE gauge
+DCGM_FI_DEV_FB_FREE{gpu="0",UUID="GPU-aaaa",device="nvidia0",Hostname="node-a",container="vllm",namespace="ml",pod="vllm-0"} 11000
+DCGM_FI_DEV_FB_FREE{gpu="1",UUID="GPU-bbbb",device="nvidia1",Hostname="node-a",container="vllm",namespace="ml",pod="vllm-0"} 16000
+DCGM_FI_DEV_FB_FREE{gpu="2",UUID="GPU-cccc",device="nvidia2",Hostname="node-a",container="tei",namespace="embeddings",pod="tei-7d9f-x1"} 76904
+DCGM_FI_DEV_FB_FREE{gpu="3",UUID="GPU-dddd",device="nvidia3",Hostname="node-a",container="",namespace="",pod=""} 81000
+# HELP DCGM_FI_DEV_POWER_USAGE Power draw (in W).
+# TYPE DCGM_FI_DEV_POWER_USAGE gauge
+DCGM_FI_DEV_POWER_USAGE{gpu="0",UUID="GPU-aaaa",device="nvidia0",Hostname="node-a",container="vllm",namespace="ml",pod="vllm-0"} 310.5
+DCGM_FI_DEV_POWER_USAGE{gpu="1",UUID="GPU-bbbb",device="nvidia1",Hostname="node-a",container="vllm",namespace="ml",pod="vllm-0"} 200.5
+DCGM_FI_DEV_POWER_USAGE{gpu="2",UUID="GPU-cccc",device="nvidia2",Hostname="node-a",container="tei",namespace="embeddings",pod="tei-7d9f-x1"} 88
+DCGM_FI_DEV_POWER_USAGE{gpu="3",UUID="GPU-dddd",device="nvidia3",Hostname="node-a",container="",namespace="",pod=""} 55

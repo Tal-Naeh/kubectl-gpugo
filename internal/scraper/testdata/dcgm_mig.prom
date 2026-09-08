@@ -1,0 +1,18 @@
+# HELP DCGM_FI_PROF_GR_ENGINE_ACTIVE Ratio of time the graphics engine is active.
+# TYPE DCGM_FI_PROF_GR_ENGINE_ACTIVE gauge
+DCGM_FI_PROF_GR_ENGINE_ACTIVE{gpu="0",UUID="GPU-aaaa",device="nvidia0",GPU_I_PROFILE="1g.10gb",GPU_I_ID="7",Hostname="dgx-1",container="worker",namespace="it-dgx1",pod="transcription-0"} 0.42
+DCGM_FI_PROF_GR_ENGINE_ACTIVE{gpu="0",UUID="GPU-aaaa",device="nvidia0",GPU_I_PROFILE="1g.10gb",GPU_I_ID="8",Hostname="dgx-1",container="worker",namespace="it-dgx1",pod="transcription-1"} 0.05
+DCGM_FI_PROF_GR_ENGINE_ACTIVE{gpu="0",UUID="GPU-aaaa",device="nvidia0",GPU_I_PROFILE="1g.10gb",GPU_I_ID="9",Hostname="dgx-1",container="worker",namespace="it-dgx2",pod="ocr-0"} 0.9
+DCGM_FI_PROF_GR_ENGINE_ACTIVE{gpu="1",UUID="GPU-bbbb",device="nvidia1",GPU_I_PROFILE="3g.40gb",GPU_I_ID="1",Hostname="dgx-1",container="vllm",namespace="it-dgx2",pod="vllm-0"} 0.77
+# HELP DCGM_FI_DEV_FB_USED Framebuffer memory used (in MiB).
+# TYPE DCGM_FI_DEV_FB_USED gauge
+DCGM_FI_DEV_FB_USED{gpu="0",UUID="GPU-aaaa",device="nvidia0",GPU_I_PROFILE="1g.10gb",GPU_I_ID="7",Hostname="dgx-1",container="worker",namespace="it-dgx1",pod="transcription-0"} 6000
+DCGM_FI_DEV_FB_USED{gpu="0",UUID="GPU-aaaa",device="nvidia0",GPU_I_PROFILE="1g.10gb",GPU_I_ID="8",Hostname="dgx-1",container="worker",namespace="it-dgx1",pod="transcription-1"} 5900
+DCGM_FI_DEV_FB_USED{gpu="0",UUID="GPU-aaaa",device="nvidia0",GPU_I_PROFILE="1g.10gb",GPU_I_ID="9",Hostname="dgx-1",container="worker",namespace="it-dgx2",pod="ocr-0"} 9000
+DCGM_FI_DEV_FB_USED{gpu="1",UUID="GPU-bbbb",device="nvidia1",GPU_I_PROFILE="3g.40gb",GPU_I_ID="1",Hostname="dgx-1",container="vllm",namespace="it-dgx2",pod="vllm-0"} 38000
+# HELP DCGM_FI_DEV_FB_FREE Framebuffer memory free (in MiB).
+# TYPE DCGM_FI_DEV_FB_FREE gauge
+DCGM_FI_DEV_FB_FREE{gpu="0",UUID="GPU-aaaa",device="nvidia0",GPU_I_PROFILE="1g.10gb",GPU_I_ID="7",Hostname="dgx-1",container="worker",namespace="it-dgx1",pod="transcription-0"} 3700
+DCGM_FI_DEV_FB_FREE{gpu="0",UUID="GPU-aaaa",device="nvidia0",GPU_I_PROFILE="1g.10gb",GPU_I_ID="8",Hostname="dgx-1",container="worker",namespace="it-dgx1",pod="transcription-1"} 3800
+DCGM_FI_DEV_FB_FREE{gpu="0",UUID="GPU-aaaa",device="nvidia0",GPU_I_PROFILE="1g.10gb",GPU_I_ID="9",Hostname="dgx-1",container="worker",namespace="it-dgx2",pod="ocr-0"} 700
+DCGM_FI_DEV_FB_FREE{gpu="1",UUID="GPU-bbbb",device="nvidia1",GPU_I_PROFILE="3g.40gb",GPU_I_ID="1",Hostname="dgx-1",container="vllm",namespace="it-dgx2",pod="vllm-0"} 2000

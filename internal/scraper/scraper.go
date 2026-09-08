@@ -36,18 +36,25 @@ import (
 // describes a workload pod and its GPUs. In fallback mode GPUIndex is set,
 // Namespace is "-", Pod is "(gpu N)", and HintPods lists candidate workloads.
 type PodGPU struct {
-	Namespace   string
-	Pod         string
-	Node        string
-	GPUIndex    string   // empty in pod-attributed mode
-	HintPods    []string // candidates in fallback mode (ns/pod)
-	GPUIndices  []string // sorted GPU indices used by this pod ("0","1","2" or "0,1")
-	GPUCount    int
-	GPUUtilPct  float64
-	VRAMUsedMiB float64
-	VRAMFreeMiB float64
-	PowerWatts  float64
+	Namespace   string   `json:"namespace"`
+	Pod         string   `json:"pod"`
+	Node        string   `json:"node"`
+	GPUIndex    string   `json:"gpuIndex,omitempty"` // set only in per-(node, GPU) fallback mode
+	HintPods    []string `json:"hintPods,omitempty"` // candidates in fallback mode (ns/pod)
+	GPUIndices  []string `json:"gpus"`               // sorted GPU indices used by this pod ("0","1","2" or "0:8" on MIG)
+	GPUCount    int      `json:"gpuCount"`
+	GPUUtilPct  float64  `json:"gpuUtilPct"`
+	VRAMUsedMiB float64  `json:"vramUsedMiB"`
+	VRAMFreeMiB float64  `json:"vramFreeMiB"`
+	PowerWatts  float64  `json:"powerWatts"`
 }
+
+// IsFallback reports whether the row is a per-(node, GPU) fallback row
+// rather than a pod-attributed one.
+func (p PodGPU) IsFallback() bool { return p.GPUIndex != "" }
+
+// VRAMTotalMiB is used + free framebuffer for this row's GPUs.
+func (p PodGPU) VRAMTotalMiB() float64 { return p.VRAMUsedMiB + p.VRAMFreeMiB }
 
 type Scraper struct {
 	cs      kubernetes.Interface
@@ -64,6 +71,12 @@ type Scraper struct {
 	// the `--exporter` CLI flag for clusters where keyword filtering misses
 	// the user's exporter or where listing pods cluster-wide is denied.
 	explicit []k8s.ExporterPod
+
+	// namespace, when non-empty, restricts Snapshot output to workload pods
+	// in that namespace (kubectl's -n/--namespace). Exporter discovery is
+	// still cluster-wide: exporters live in their own namespace, not the
+	// workload's.
+	namespace string
 }
 
 const discoveryTTL = 30 * time.Second
@@ -91,6 +104,14 @@ func (s *Scraper) SetExplicit(eps []k8s.ExporterPod) {
 	s.explicit = eps
 }
 
+// SetNamespace restricts Snapshot rows to workload pods in ns. Empty means
+// all namespaces. In per-(node, GPU) fallback mode the row itself has no
+// namespace, so the filter is applied to the HintPods instead and rows with
+// no remaining candidates are dropped.
+func (s *Scraper) SetNamespace(ns string) {
+	s.namespace = ns
+}
+
 // sample is the flattened form of a single DCGM metric reading. Everything
 // downstream operates on []sample so the two aggregation passes can share the
 // same input without re-scraping.
@@ -107,6 +128,45 @@ type gpuKey struct{ ns, pod, gpu string }
 // NVIDIA device plugin. DCGM is the fallback, with its own per-pod and
 // per-(node, GPU) fallbacks layered inside.
 func (s *Scraper) Snapshot(ctx context.Context) ([]PodGPU, error) {
+	rows, err := s.snapshotAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return FilterNamespace(rows, s.namespace), nil
+}
+
+// FilterNamespace returns the rows belonging to ns (all rows when ns is
+// empty). Fallback rows are kept only if at least one HintPod is in ns, and
+// their HintPods list is narrowed to that namespace.
+func FilterNamespace(rows []PodGPU, ns string) []PodGPU {
+	if ns == "" {
+		return rows
+	}
+	out := make([]PodGPU, 0, len(rows))
+	prefix := ns + "/"
+	for _, r := range rows {
+		if !r.IsFallback() {
+			if r.Namespace == ns {
+				out = append(out, r)
+			}
+			continue
+		}
+		var hints []string
+		for _, h := range r.HintPods {
+			if strings.HasPrefix(h, prefix) {
+				hints = append(hints, h)
+			}
+		}
+		if len(hints) == 0 {
+			continue
+		}
+		r.HintPods = hints
+		out = append(out, r)
+	}
+	return out
+}
+
+func (s *Scraper) snapshotAll(ctx context.Context) ([]PodGPU, error) {
 	sources, err := s.discover(ctx, false)
 	if err != nil {
 		return nil, err

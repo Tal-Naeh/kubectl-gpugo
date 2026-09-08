@@ -31,12 +31,15 @@ import (
 	dto "github.com/prometheus/client_model/go"
 )
 
+// enricherResult is one scraped per-process exporter's parsed families,
+// tagged with the node the exporter pod runs on.
+type enricherResult struct {
+	fams map[string]*dto.MetricFamily
+	node string
+}
+
 func (s *Scraper) snapshotFromEnrichers(ctx context.Context, enrichers []k8s.ExporterPod) ([]PodGPU, error) {
-	type result struct {
-		fams map[string]*dto.MetricFamily
-		node string
-	}
-	results := make(chan result, len(enrichers))
+	results := make(chan enricherResult, len(enrichers))
 	var (
 		firstErr error
 		mu       sync.Mutex
@@ -55,12 +58,27 @@ func (s *Scraper) snapshotFromEnrichers(ctx context.Context, enrichers []k8s.Exp
 				mu.Unlock()
 				return
 			}
-			results <- result{fams: fams, node: ex.NodeName}
+			results <- enricherResult{fams: fams, node: ex.NodeName}
 		}(ex)
 	}
 	wg.Wait()
 	close(results)
 
+	var collected []enricherResult
+	for r := range results {
+		collected = append(collected, r)
+	}
+	rows := buildEnricherRows(collected)
+	if len(rows) == 0 && firstErr != nil {
+		return nil, firstErr
+	}
+	return rows, nil
+}
+
+// buildEnricherRows aggregates per-process samples into one PodGPU row per
+// workload pod. Pure function of the parsed families so it can be unit-tested
+// against fixture files without a cluster.
+func buildEnricherRows(results []enricherResult) []PodGPU {
 	type gpuInfo struct {
 		node      string
 		totalVRAM float64 // bytes
@@ -76,7 +94,7 @@ func (s *Scraper) snapshotFromEnrichers(ctx context.Context, enrichers []k8s.Exp
 	}
 	pods := map[string]map[string]*podGPUUse{} // ns/pod -> uuid -> use
 
-	for r := range results {
+	for _, r := range results {
 		if r.fams == nil {
 			continue
 		}
@@ -141,10 +159,6 @@ func (s *Scraper) snapshotFromEnrichers(ctx context.Context, enrichers []k8s.Exp
 		}
 	}
 
-	if len(pods) == 0 && firstErr != nil {
-		return nil, firstErr
-	}
-
 	const mib = 1024 * 1024
 	rows := make([]PodGPU, 0, len(pods))
 	for nsPod, uses := range pods {
@@ -193,7 +207,7 @@ func (s *Scraper) snapshotFromEnrichers(ctx context.Context, enrichers []k8s.Exp
 			PowerWatts:  powerShare,
 		})
 	}
-	return rows, nil
+	return rows
 }
 
 func label(m *dto.Metric, name string) string {

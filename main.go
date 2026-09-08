@@ -21,6 +21,9 @@ import (
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 )
 
+// version is stamped by GoReleaser via -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	// Honour the standard kubectl flags (--kubeconfig, --context, -n, etc.)
 	// so the plugin behaves like every other `kubectl ...` subcommand.
@@ -30,7 +33,23 @@ func main() {
 	dump := pflag.Bool("dump", false, "print raw /metrics from each dcgm-exporter and exit (for label-convention debugging)")
 	dumpPod := pflag.String("dump-pod", "", "print raw /metrics from an explicit pod and exit; format: namespace/pod-name:port")
 	exporters := pflag.StringSlice("exporter", nil, "explicit exporter target(s) to scrape; bypasses auto-discovery. Format: namespace/pod-name:port. Comma-separated or repeat the flag.")
+	once := pflag.Bool("once", false, "take a single snapshot, print it to stdout and exit (no TUI)")
+	output := pflag.StringP("output", "o", "table", "output format for --once: table|json. json implies --once.")
+	interval := pflag.Duration("interval", tui.DefaultInterval, "TUI refresh interval (e.g. 5s, 1m)")
+	showVersion := pflag.Bool("version", false, "print version and exit")
 	pflag.Parse()
+
+	if *showVersion {
+		fmt.Println("kubectl-gpugo", version)
+		return
+	}
+	if *output != "table" && *output != "json" {
+		fmt.Fprintf(os.Stderr, "kubectl-gpugo: --output must be table or json, got %q\n", *output)
+		os.Exit(2)
+	}
+	if *output == "json" {
+		*once = true
+	}
 
 	client, restCfg, err := k8s.NewClient(cfgFlags)
 	if err != nil {
@@ -39,6 +58,9 @@ func main() {
 	}
 
 	scr := scraper.New(client, restCfg)
+	if cfgFlags.Namespace != nil && *cfgFlags.Namespace != "" {
+		scr.SetNamespace(*cfgFlags.Namespace)
+	}
 
 	if len(*exporters) > 0 {
 		parsed, err := parseExporterSpecs(*exporters)
@@ -69,11 +91,36 @@ func main() {
 		return
 	}
 
-	p := tea.NewProgram(tui.NewModel(scr), tea.WithAltScreen())
+	if *once {
+		if err := runOnce(scr, *output); err != nil {
+			fmt.Fprintf(os.Stderr, "kubectl-gpugo: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	p := tea.NewProgram(tui.NewModel(scr, *interval), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "kubectl-gpugo: tui: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// runOnce takes one snapshot and writes it to stdout in the requested format.
+// Exit status is non-zero only on scrape failure; an empty result (no GPU
+// pods) is a valid, successful answer.
+func runOnce(scr *scraper.Scraper, format string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	rows, err := scr.Snapshot(ctx)
+	if err != nil {
+		return err
+	}
+	rep := scraper.NewReport(rows, time.Now())
+	if format == "json" {
+		return rep.WriteJSON(os.Stdout)
+	}
+	return rep.WriteTable(os.Stdout)
 }
 
 // parseExporterSpecs turns "namespace/pod:port" strings (one per --exporter

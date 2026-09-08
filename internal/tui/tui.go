@@ -1,5 +1,6 @@
 // Package tui is the Bubbletea TUI for kubectl-gpugo. It owns no scrape
-// logic of its own — it just kicks scrape commands on a 2s ticker and renders
+// logic of its own — it just kicks scrape commands on a ticker (default 20s,
+// --interval) and renders
 // the most recent snapshot. Scrapes run as tea.Cmd goroutines so a slow
 // apiserver round-trip never blocks input.
 package tui
@@ -7,7 +8,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	tickInterval  = 20 * time.Second
-	scrapeTimeout = 10 * time.Second
+	// DefaultInterval is the refresh cadence when --interval is not given.
+	DefaultInterval = 20 * time.Second
+	scrapeTimeout   = 10 * time.Second
 
 	// reservedRows is what the View() chrome occupies outside the scrollable
 	// body: title (1) + blank (1) + column header (1) + bottom hint (1).
@@ -37,6 +38,7 @@ type scrapeMsg struct {
 
 type Model struct {
 	scr          *scraper.Scraper
+	interval     time.Duration
 	pods         []scraper.PodGPU
 	lastErr      error
 	lastScrape   time.Time
@@ -46,17 +48,21 @@ type Model struct {
 	scrollOffset int
 }
 
-func NewModel(s *scraper.Scraper) Model {
-	return Model{scr: s}
+// NewModel builds the TUI model. interval <= 0 falls back to DefaultInterval.
+func NewModel(s *scraper.Scraper, interval time.Duration) Model {
+	if interval <= 0 {
+		interval = DefaultInterval
+	}
+	return Model{scr: s, interval: interval}
 }
 
 func (m Model) Init() tea.Cmd {
 	m.scraping = true
-	return tea.Batch(scrapeCmd(m.scr), tickCmd())
+	return tea.Batch(scrapeCmd(m.scr), tickCmd(m.interval))
 }
 
-func tickCmd() tea.Cmd {
-	return tea.Tick(tickInterval, func(t time.Time) tea.Msg { return tickMsg(t) })
+func tickCmd(every time.Duration) tea.Cmd {
+	return tea.Tick(every, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
 func scrapeCmd(s *scraper.Scraper) tea.Cmd {
@@ -104,7 +110,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.scrollOffset = m.maxScroll()
 		}
 	case tickMsg:
-		cmds := []tea.Cmd{tickCmd()}
+		cmds := []tea.Cmd{tickCmd(m.interval)}
 		if !m.scraping {
 			m.scraping = true
 			cmds = append(cmds, scrapeCmd(m.scr))
@@ -153,25 +159,9 @@ var (
 	tableWidths = []int{16, 48, 14, 5, 7, 22, 8}
 )
 
-// sortedPods returns m.pods sorted for display: by first GPU index (so rows
-// on the same physical card / MIG slice group together), then by VRAM-used
-// desc within a GPU, then alphabetically.
+// sortedPods returns m.pods in display order (see scraper.SortRows).
 func (m Model) sortedPods() []scraper.PodGPU {
-	pods := append([]scraper.PodGPU(nil), m.pods...)
-	sort.Slice(pods, func(i, j int) bool {
-		gi, gj := gpuKey(pods[i]), gpuKey(pods[j])
-		if gi != gj {
-			return gi < gj
-		}
-		if pods[i].VRAMUsedMiB != pods[j].VRAMUsedMiB {
-			return pods[i].VRAMUsedMiB > pods[j].VRAMUsedMiB
-		}
-		if pods[i].Namespace != pods[j].Namespace {
-			return pods[i].Namespace < pods[j].Namespace
-		}
-		return pods[i].Pod < pods[j].Pod
-	})
-	return pods
+	return scraper.SortRows(m.pods)
 }
 
 // renderBodyLines produces the scrollable body as a slice of pre-rendered
@@ -360,27 +350,6 @@ func (m Model) View() string {
 		b.WriteString("\n")
 	}
 
-	return b.String()
-}
-
-// gpuKey returns a sortable key built from a pod's GPU indices so the table
-// groups rows by which card they're on. Components are zero-padded so
-// "0:8" sorts before "0:10" lexicographically.
-func gpuKey(p scraper.PodGPU) string {
-	if len(p.GPUIndices) == 0 {
-		return "~"
-	}
-	var b strings.Builder
-	for _, g := range p.GPUIndices {
-		for _, part := range strings.Split(g, ":") {
-			if len(part) < 3 {
-				b.WriteString(strings.Repeat("0", 3-len(part)))
-			}
-			b.WriteString(part)
-			b.WriteByte(':')
-		}
-		b.WriteByte(',')
-	}
 	return b.String()
 }
 
