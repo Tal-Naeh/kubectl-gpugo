@@ -124,12 +124,67 @@ Download the archive matching your OS/arch from the [releases page](https://gith
 
 ## Flags
 
-| Flag                  | Purpose                                                                                                  |
-|-----------------------|----------------------------------------------------------------------------------------------------------|
-| `--kubeconfig`, `--context` | Standard kubectl flags                                                                              |
-| `--exporter ns/pod:port`    | Skip auto-discovery and scrape a specific pod. Comma-separate or repeat the flag for multiple pods. |
-| `--dump`              | Print raw `/metrics` from every auto-discovered exporter and exit. Useful for debugging label conventions. |
-| `--dump-pod ns/pod:port` | Print raw `/metrics` from one specific pod and exit.                                                  |
+| Flag                        | Purpose                                                                                                  |
+|-----------------------------|----------------------------------------------------------------------------------------------------------|
+| `--kubeconfig`, `--context` | Standard kubectl flags                                                                                   |
+| `-n`, `--namespace`         | Only show workload pods in this namespace (exporter discovery stays cluster-wide).                        |
+| `--once`                    | Take one snapshot, print a plain table to stdout and exit. No TUI, no colour. Pipe-friendly.             |
+| `-o`, `--output table\|json` | Output format for `--once`. `json` implies `--once`.                                                    |
+| `--interval 20s`            | TUI refresh cadence (any Go duration, e.g. `5s`, `1m`).                                                   |
+| `--exporter ns/pod:port`    | Skip auto-discovery and scrape a specific pod. Comma-separate or repeat the flag for multiple pods.      |
+| `--dump`                    | Print raw `/metrics` from every auto-discovered exporter and exit. Useful for debugging label conventions. |
+| `--dump-pod ns/pod:port`    | Print raw `/metrics` from one specific pod and exit.                                                     |
+| `--version`                 | Print the version and exit.                                                                              |
+
+## Scripting: `--once` and JSON
+
+```sh
+# plain table, e.g. for a cron job, a CI gate, or a k9s plugin pane
+kubectl gpugo --once
+kubectl gpugo --once -n ml
+
+# machine-readable
+kubectl gpugo -o json | jq '.rows[] | select(.gpuUtilPct < 5 and .vramUsedMiB > 10000) | "\(.namespace)/\(.pod)"'
+```
+
+JSON shape (fields are additive-only across versions):
+
+```json
+{
+  "scrapedAt": "2026-09-08T09:12:44Z",
+  "mode": "pod",
+  "rows": [
+    {
+      "namespace": "ml", "pod": "vllm-0", "node": "node-a",
+      "gpus": ["0", "1"], "gpuCount": 2,
+      "gpuUtilPct": 65, "vramUsedMiB": 135000, "vramFreeMiB": 27000, "powerWatts": 511
+    }
+  ]
+}
+```
+
+`mode` is `"pod"` when rows are attributed to workload pods and `"gpu"` when dcgm-exporter gave no pod labels; in that case each row carries `gpuIndex` and `hintPods` (pods on that node requesting `nvidia.com/gpu`).
+
+### k9s plugin
+
+Drop this into `~/.config/k9s/plugins.yaml` and press `Shift-G` on any pod view:
+
+```yaml
+plugins:
+  gpugo:
+    shortCut: Shift-G
+    description: GPU usage (kubectl-gpugo)
+    scopes: [pods]
+    command: kubectl
+    background: false
+    args:
+      - gpugo
+      - --context
+      - $CONTEXT
+      - -n
+      - $NAMESPACE
+      - --once
+```
 
 ## Keys inside the TUI
 
@@ -148,10 +203,13 @@ Download the archive matching your OS/arch from the [releases page](https://gith
 
 ```sh
 go build ./...
-./kubectl-gpugo
+go test ./...          # parser/aggregation tests run against fixtures in internal/scraper/testdata
+./kubectl-gpugo --interval 5s
 ```
 
-The tick interval is 20s; force a refresh with `r`.
+Without a GPU cluster at hand you can run the whole thing against a fake exporter: any pod named like `*dcgm-exporter*` that serves a DCGM-style Prometheus text file on `/metrics` (e.g. nginx + a ConfigMap) is discovered and rendered exactly like the real DaemonSet. The fixtures under `internal/scraper/testdata/` are valid input.
+
+CI (`.github/workflows/ci.yml`) runs gofmt, vet, tests with `-race`, and a cross-compile smoke test on every PR.
 
 ## Limitations / known issues
 
