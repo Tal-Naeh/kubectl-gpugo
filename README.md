@@ -23,7 +23,7 @@ Out of the box it understands two kinds of exporters:
 
 <img width="1024" height="671" alt="image" src="https://github.com/user-attachments/assets/9b034b43-8dfe-4caa-b093-6092023d55ad" />
 
-Rows are sorted by physical GPU, then by MIG slice ID. A blank line separates each physical card so pile-ups are obvious at a glance.
+Rows are sorted by physical GPU, then by MIG slice ID, so pods sharing a card sit next to each other. Rows are continuous (no separator lines between cards).
 
 ## Requirements
 
