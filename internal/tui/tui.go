@@ -165,15 +165,12 @@ func (m Model) sortedPods() []scraper.PodGPU {
 }
 
 // renderBodyLines produces the scrollable body as a slice of pre-rendered
-// strings. A blank separator is inserted whenever the *physical* GPU
-// changes (not every MIG slice change), so a 7-slice A100 stays as one
-// visual cluster instead of being split into seven mini-groups.
-// Returns the lines and a flag indicating whether any row is a per-GPU
-// fallback row (used to decide whether to print the "enable --kubernetes"
-// hint).
+// strings, one per row, in SortRows order (rows on the same physical card
+// are adjacent). Returns the lines and a flag indicating whether any row is
+// a per-GPU fallback row (used to decide whether to print the "enable
+// --kubernetes" hint).
 func (m Model) renderBodyLines() (lines []string, fallback bool) {
 	pods := m.sortedPods()
-	prevGroup := ""
 	for _, p := range pods {
 		total := p.VRAMUsedMiB + p.VRAMFreeMiB
 		podCell := p.Pod
@@ -187,12 +184,6 @@ func (m Model) renderBodyLines() (lines []string, fallback bool) {
 		if gpuCell == "" {
 			gpuCell = fmt.Sprintf("(%d)", p.GPUCount)
 		}
-		curGroup := physicalGPUGroup(p)
-		if prevGroup != "" && prevGroup != curGroup {
-			lines = append(lines, "")
-		}
-		prevGroup = curGroup
-
 		var b strings.Builder
 		fmt.Fprintf(&b, "%-*s  %-*s  %-*s  %-*s  ",
 			tableWidths[0], truncate(p.Namespace, tableWidths[0]),
@@ -210,40 +201,11 @@ func (m Model) renderBodyLines() (lines []string, fallback bool) {
 	return lines, fallback
 }
 
-// totalLines counts what renderBodyLines would produce, without doing the
-// expensive string-building. Used for scroll-offset clamping in Update().
+// totalLines counts what renderBodyLines would produce (one line per row),
+// without doing the string-building. Used for scroll-offset clamping in
+// Update().
 func (m Model) totalLines() int {
-	if len(m.pods) == 0 {
-		return 0
-	}
-	pods := m.sortedPods()
-	n := len(pods)
-	prev := ""
-	for _, p := range pods {
-		cur := physicalGPUGroup(p)
-		if prev != "" && prev != cur {
-			n++
-		}
-		prev = cur
-	}
-	return n
-}
-
-// physicalGPUGroup returns the grouping key for the blank-line separator
-// in the body. On MIG installs each pod sits on one slice like "0:8"; we
-// group by the part before the colon ("0") so all slices of the same
-// physical card appear as one cluster. On non-MIG installs there's no
-// colon and the full GPUIndices set is used (joined, in case a pod spans
-// multiple cards).
-func physicalGPUGroup(p scraper.PodGPU) string {
-	if len(p.GPUIndices) == 0 {
-		return ""
-	}
-	first := p.GPUIndices[0]
-	if i := strings.Index(first, ":"); i >= 0 {
-		return first[:i]
-	}
-	return strings.Join(p.GPUIndices, ",")
+	return len(m.pods)
 }
 
 // bodyHeight is the number of rows of body content the viewport can show.
