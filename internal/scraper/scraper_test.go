@@ -12,6 +12,8 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/expfmt"
 	prommodel "github.com/prometheus/common/model"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 func loadFixture(t *testing.T, name string) map[string]*dto.MetricFamily {
@@ -59,8 +61,8 @@ func TestDCGMPodAttribution(t *testing.T) {
 	if vllm.PowerWatts != 511 {
 		t.Errorf("vllm-0 power: want 511, got %v", vllm.PowerWatts)
 	}
-	if vllm.Node != "node-a" { // Hostname label wins over exporter node
-		t.Errorf("vllm-0 node: want node-a, got %q", vllm.Node)
+	if vllm.Node != "exporter-node" { // exporter pod's nodeName wins over the Hostname label
+		t.Errorf("vllm-0 node: want exporter-node, got %q", vllm.Node)
 	}
 
 	tei := rowByPod(t, rows, "embeddings", "tei-7d9f-x1")
@@ -204,5 +206,58 @@ func TestReportJSONAndTable(t *testing.T) {
 	}
 	if strings.Contains(out, "\x1b[") {
 		t.Errorf("table output must not contain ANSI escapes")
+	}
+}
+
+func TestHostnameFallbackWhenExporterNodeUnknown(t *testing.T) {
+	rows := aggregateByPod(extractSamples(loadFixture(t, "dcgm_pod_labels.prom"), ""))
+	for _, r := range rows {
+		if r.Node != "node-a" {
+			t.Errorf("%s/%s node: want node-a (Hostname label), got %q", r.Namespace, r.Pod, r.Node)
+		}
+	}
+}
+
+// Non-MIG cards with DCP metrics emit GPU_UTIL and PROF_GR_ENGINE_ACTIVE for
+// the same GPU; they must not be added together.
+func TestUtilSourcePrecedence(t *testing.T) {
+	body := strings.Join([]string{
+		`DCGM_FI_DEV_GPU_UTIL{gpu="0",UUID="GPU-a",namespace="ml",pod="p"} 80`,
+		`DCGM_FI_PROF_GR_ENGINE_ACTIVE{gpu="0",UUID="GPU-a",namespace="ml",pod="p"} 0.7`,
+		`DCGM_FI_DEV_GPU_UTIL{gpu="1",UUID="GPU-b",namespace="ml",pod="p"} 40`,
+		`DCGM_FI_PROF_GR_ENGINE_ACTIVE{gpu="1",UUID="GPU-b",namespace="ml",pod="p"} 0.9`,
+	}, "\n") + "\n"
+	parser := expfmt.NewTextParser(prommodel.LegacyValidation)
+	fams, err := parser.TextToMetricFamilies(strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := aggregateByPod(extractSamples(fams, "n"))
+	if len(rows) != 1 {
+		t.Fatalf("want 1 row, got %d", len(rows))
+	}
+	if rows[0].GPUCount != 2 || rows[0].GPUUtilPct != 60 {
+		t.Errorf("want 2 GPUs at 60%%, got %d at %.1f%%", rows[0].GPUCount, rows[0].GPUUtilPct)
+	}
+}
+
+func TestPodRequestsGPUCountsMIG(t *testing.T) {
+	pod := func(res string) corev1.Pod {
+		return corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{
+			Resources: corev1.ResourceRequirements{Limits: corev1.ResourceList{
+				corev1.ResourceName(res): resource.MustParse("1"),
+			}},
+		}}}}
+	}
+	for res, want := range map[string]bool{
+		"nvidia.com/gpu":          true,
+		"nvidia.com/mig-1g.10gb":  true,
+		"nvidia.com/mig-3g.40gb":  true,
+		"cpu":                     false,
+		"example.com/nvidia-mig-": false,
+	} {
+		if got := podRequestsGPU(pod(res)); got != want {
+			t.Errorf("podRequestsGPU(%s) = %v, want %v", res, got, want)
+		}
 	}
 }

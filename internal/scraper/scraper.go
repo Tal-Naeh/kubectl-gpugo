@@ -185,16 +185,35 @@ func (s *Scraper) snapshotAll(ctx context.Context) ([]PodGPU, error) {
 		}
 	}
 
+	// Per-process exporter where it reports; DCGM for every other node, so
+	// mixed node pools don't drop the pods on DCGM-only nodes.
+	var rows []PodGPU
 	if len(enrichers) > 0 {
-		rows, err := s.snapshotFromEnrichers(ctx, enrichers)
-		if err == nil && len(rows) > 0 {
-			return rows, nil
+		if er, err := s.snapshotFromEnrichers(ctx, enrichers); err == nil {
+			rows = er
 		}
 	}
-	if len(dcgms) > 0 {
-		return s.snapshotFromDCGM(ctx, dcgms)
+	covered := map[string]bool{}
+	for _, r := range rows {
+		covered[r.Node] = true
 	}
-	return nil, nil
+	var rest []k8s.ExporterPod
+	for _, d := range dcgms {
+		if !covered[d.NodeName] {
+			rest = append(rest, d)
+		}
+	}
+	if len(rest) > 0 {
+		dr, err := s.snapshotFromDCGM(ctx, rest)
+		if err != nil {
+			if len(rows) > 0 {
+				return rows, nil
+			}
+			return nil, err
+		}
+		rows = append(rows, dr...)
+	}
+	return rows, nil
 }
 
 // snapshotFromDCGM implements the original DCGM-only path: per-pod
@@ -416,9 +435,13 @@ func extractSamples(fams map[string]*dto.MetricFamily, exporterNode string) []sa
 		}
 		for _, m := range f.Metric {
 			ns, pod, gpu, gpuI, host := readLabels(m.Label)
-			node := host
+			// The exporter pod's spec.nodeName is authoritative. DCGM's
+			// Hostname label is the container hostname — the exporter pod
+			// name — unless the DaemonSet sets NODE_NAME, so it is only a
+			// fallback (explicit --exporter targets whose pod wasn't found).
+			node := exporterNode
 			if node == "" {
-				node = exporterNode
+				node = host
 			}
 			// On MIG installs each metric line carries both `gpu` (the
 			// physical card) and `GPU_I_ID` (the MIG slice on that card).
@@ -434,10 +457,44 @@ func extractSamples(fams map[string]*dto.MetricFamily, exporterNode string) []sa
 	return out
 }
 
+// utilSrc keeps a GPU's utilisation per source. Non-MIG cards with DCP
+// metrics enabled emit BOTH DCGM_FI_DEV_GPU_UTIL and
+// DCGM_FI_PROF_GR_ENGINE_ACTIVE for the same GPU; adding them double-counts
+// (a pod at 80% showed ~150%). GPU_UTIL wins; GR_ENGINE_ACTIVE fills in only
+// where GPU_UTIL is absent (MIG slices).
+type utilSrc struct {
+	dev, prof       float64
+	hasDev, hasProf bool
+}
+
+func (u utilSrc) pct() float64 {
+	if u.hasDev {
+		return u.dev
+	}
+	return u.prof
+}
+
+// utilAcc: aggregation key -> gpu -> util sources.
+type utilAcc map[string]map[string]*utilSrc
+
+func (a utilAcc) at(key, gpu string) *utilSrc {
+	byGPU, ok := a[key]
+	if !ok {
+		byGPU = map[string]*utilSrc{}
+		a[key] = byGPU
+	}
+	u, ok := byGPU[gpu]
+	if !ok {
+		u = &utilSrc{}
+		byGPU[gpu] = u
+	}
+	return u
+}
+
 func aggregateByPod(samples []sample) []PodGPU {
 	agg := map[string]*PodGPU{}
 	seenGPU := map[gpuKey]struct{}{}
-	utilSum := map[string]float64{}
+	utilSum := utilAcc{}
 	for _, s := range samples {
 		if s.ns == "" || s.pod == "" {
 			continue
@@ -458,7 +515,7 @@ func aggregateByPod(samples []sample) []PodGPU {
 func aggregateByGPU(samples []sample) []PodGPU {
 	agg := map[string]*PodGPU{}
 	seenGPU := map[gpuKey]struct{}{}
-	utilSum := map[string]float64{}
+	utilSum := utilAcc{}
 	for _, s := range samples {
 		gpu := s.gpu
 		if gpu == "" {
@@ -483,7 +540,7 @@ func aggregateByGPU(samples []sample) []PodGPU {
 
 func applySample(
 	p *PodGPU, key, metric, gpu string, v float64,
-	seenGPU map[gpuKey]struct{}, utilSum map[string]float64,
+	seenGPU map[gpuKey]struct{}, utilSum utilAcc,
 ) {
 	// Register the (pod, gpu) pair regardless of which metric brought us
 	// here. MIG installs don't emit DCGM_FI_DEV_GPU_UTIL at all, so if we
@@ -500,12 +557,14 @@ func applySample(
 
 	switch metric {
 	case "DCGM_FI_DEV_GPU_UTIL":
-		utilSum[key] += v
+		u := utilSum.at(key, gpu)
+		u.dev, u.hasDev = v, true
 	case "DCGM_FI_PROF_GR_ENGINE_ACTIVE":
 		// PROF metrics are reported as ratio [0,1]; scale to match the
 		// 0–100 semantics of DCGM_FI_DEV_GPU_UTIL so the TUI's % column
 		// is consistent regardless of which one the exporter emits.
-		utilSum[key] += v * 100
+		u := utilSum.at(key, gpu)
+		u.prof, u.hasProf = v*100, true
 	case "DCGM_FI_DEV_FB_USED":
 		p.VRAMUsedMiB += v
 	case "DCGM_FI_DEV_FB_FREE":
@@ -515,11 +574,15 @@ func applySample(
 	}
 }
 
-func finalize(agg map[string]*PodGPU, utilSum map[string]float64) []PodGPU {
+func finalize(agg map[string]*PodGPU, utilSum utilAcc) []PodGPU {
 	out := make([]PodGPU, 0, len(agg))
 	for k, p := range agg {
 		if p.GPUCount > 0 {
-			p.GPUUtilPct = utilSum[k] / float64(p.GPUCount)
+			var sum float64
+			for _, u := range utilSum[k] {
+				sum += u.pct()
+			}
+			p.GPUUtilPct = sum / float64(p.GPUCount)
 		}
 		if len(p.GPUIndices) > 1 {
 			sort.Strings(p.GPUIndices)
@@ -589,7 +652,14 @@ func snippet(b []byte, n int) string {
 	return string(b)
 }
 
-// gpuRequestingPodsByNode lists Running pods that request nvidia.com/gpu,
+// isGPUResource reports whether a resource name is a GPU device: whole GPUs
+// (nvidia.com/gpu) or MIG slices advertised under mig.strategy=mixed
+// (nvidia.com/mig-1g.10gb, ...).
+func isGPUResource(name corev1.ResourceName) bool {
+	return name == "nvidia.com/gpu" || strings.HasPrefix(string(name), "nvidia.com/mig-")
+}
+
+// gpuRequestingPodsByNode lists Running pods that request a GPU device,
 // grouped by their scheduling node. Used to enrich the fallback view with
 // "pods that *could* be using that GPU" hints.
 func (s *Scraper) gpuRequestingPodsByNode(ctx context.Context) (map[string][]string, error) {
@@ -613,7 +683,7 @@ func (s *Scraper) gpuRequestingPodsByNode(ctx context.Context) (map[string][]str
 func podRequestsGPU(p corev1.Pod) bool {
 	hasGPU := func(rl corev1.ResourceList) bool {
 		for k, q := range rl {
-			if k == "nvidia.com/gpu" && q.Value() > 0 {
+			if isGPUResource(k) && q.Value() > 0 {
 				return true
 			}
 		}
