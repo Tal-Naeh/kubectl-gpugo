@@ -652,11 +652,13 @@ func snippet(b []byte, n int) string {
 	return string(b)
 }
 
-// isGPUResource reports whether a resource name is a GPU device: whole GPUs
-// (nvidia.com/gpu) or MIG slices advertised under mig.strategy=mixed
-// (nvidia.com/mig-1g.10gb, ...).
+// isGPUResource reports whether a resource name puts a pod on a GPU: whole
+// GPUs (nvidia.com/gpu), MIG slices advertised under mig.strategy=mixed
+// (nvidia.com/mig-1g.10gb, ...), and their time-slicing replicas renamed to
+// *.shared (nvidia.com/gpu.shared, nvidia.com/mig-1g.10gb.shared).
 func isGPUResource(name corev1.ResourceName) bool {
-	return name == "nvidia.com/gpu" || strings.HasPrefix(string(name), "nvidia.com/mig-")
+	n := string(name)
+	return n == "nvidia.com/gpu" || strings.HasPrefix(n, "nvidia.com/gpu.") || strings.HasPrefix(n, "nvidia.com/mig-")
 }
 
 // gpuRequestingPodsByNode lists Running pods that request a GPU device,

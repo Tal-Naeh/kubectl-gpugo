@@ -250,11 +250,14 @@ func TestPodRequestsGPUCountsMIG(t *testing.T) {
 		}}}}
 	}
 	for res, want := range map[string]bool{
-		"nvidia.com/gpu":          true,
-		"nvidia.com/mig-1g.10gb":  true,
-		"nvidia.com/mig-3g.40gb":  true,
-		"cpu":                     false,
-		"example.com/nvidia-mig-": false,
+		"nvidia.com/gpu":                true,
+		"nvidia.com/mig-1g.10gb":        true,
+		"nvidia.com/mig-3g.40gb":        true,
+		"nvidia.com/gpu.shared":         true,
+		"nvidia.com/mig-1g.10gb.shared": true,
+		"nvidia.com/gpux":               false,
+		"cpu":                           false,
+		"example.com/nvidia-mig-":       false,
 	} {
 		if got := podRequestsGPU(pod(res)); got != want {
 			t.Errorf("podRequestsGPU(%s) = %v, want %v", res, got, want)
